@@ -18,6 +18,7 @@ import (
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
 	"github.com/bestruirui/octopus/internal/utils/log"
 	"github.com/gin-gonic/gin"
+	"github.com/samber/lo"
 	"github.com/tmaxmax/go-sse"
 )
 
@@ -27,6 +28,9 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	internalRequest, inAdapter, err := parseRequest(inboundType, c)
 	if err != nil {
 		return
+	}
+	if internalRequest.RawAPIFormat == model.APIFormatOpenAIResponse {
+		internalRequest.Stream = lo.ToPtr(true)
 	}
 	supportedModels := c.GetString("supported_models")
 	if supportedModels != "" {
@@ -235,6 +239,9 @@ func (rc *relayContext) forward() (int, error) {
 func (rc *relayContext) copyHeaders(outboundRequest *http.Request) {
 	for key, values := range rc.c.Request.Header {
 		if hopByHopHeaders[strings.ToLower(key)] {
+			continue
+		}
+		if strings.EqualFold(key, "accept") {
 			continue
 		}
 		for _, value := range values {
