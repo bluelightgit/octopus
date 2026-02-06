@@ -143,16 +143,26 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 		}
 
 	case "response.output_text.delta":
+		deltaText := streamEvent.Delta
+		if deltaText == "" {
+			deltaText = streamEvent.Text
+		}
+		if deltaText == "" {
+			return nil, nil
+		}
 		resp.Choices = []model.Choice{
 			{
 				Index: 0,
 				Delta: &model.Message{
 					Role: "assistant",
 					Content: model.MessageContent{
-						Content: lo.ToPtr(streamEvent.Delta),
+						Content: lo.ToPtr(deltaText),
 					},
 				},
 			},
+		}
+		if len(streamEvent.Logprobs) > 0 {
+			resp.Choices[0].Logprobs = convertResponsesLogprobs(streamEvent.Logprobs)
 		}
 
 	case "response.function_call_arguments.delta":
@@ -201,6 +211,9 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 		}
 
 	case "response.reasoning_summary_text.delta":
+		if streamEvent.Delta == "" {
+			return nil, nil
+		}
 		resp.Choices = []model.Choice{
 			{
 				Index: 0,
@@ -209,6 +222,65 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 					ReasoningContent: lo.ToPtr(streamEvent.Delta),
 				},
 			},
+		}
+
+	case "response.reasoning_text.delta", "response.reasoning_text.done":
+		text := streamEvent.Delta
+		if text == "" {
+			text = streamEvent.Text
+		}
+		if text == "" {
+			return nil, nil
+		}
+		resp.Choices = []model.Choice{
+			{
+				Index: 0,
+				Delta: &model.Message{
+					Role:             "assistant",
+					ReasoningContent: lo.ToPtr(text),
+				},
+			},
+		}
+
+	case "response.refusal.delta", "response.refusal.done":
+		text := streamEvent.Refusal
+		if text == "" {
+			text = streamEvent.Text
+		}
+		if text == "" {
+			return nil, nil
+		}
+		resp.Choices = []model.Choice{
+			{
+				Index: 0,
+				Delta: &model.Message{
+					Role:    "assistant",
+					Refusal: text,
+				},
+			},
+		}
+
+	case "response.output_text.done":
+		text := streamEvent.Text
+		if text == "" {
+			text = streamEvent.Delta
+		}
+		if text == "" {
+			return nil, nil
+		}
+		resp.Choices = []model.Choice{
+			{
+				Index: 0,
+				Delta: &model.Message{
+					Role: "assistant",
+					Content: model.MessageContent{
+						Content: lo.ToPtr(text),
+					},
+				},
+			},
+		}
+		if len(streamEvent.Logprobs) > 0 {
+			resp.Choices[0].Logprobs = convertResponsesLogprobs(streamEvent.Logprobs)
 		}
 
 	case "response.completed":
@@ -253,22 +325,25 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 
 // ResponsesRequest represents the OpenAI Responses API request format.
 type ResponsesRequest struct {
-	Model             string                `json:"model"`
-	Instructions      string                `json:"instructions,omitempty"`
-	Input             ResponsesInput        `json:"input"`
-	Tools             []ResponsesTool       `json:"tools,omitempty"`
-	ToolChoice        *ResponsesToolChoice  `json:"tool_choice,omitempty"`
-	ParallelToolCalls *bool                 `json:"parallel_tool_calls,omitempty"`
-	Stream            *bool                 `json:"stream,omitempty"`
-	Text              *ResponsesTextOptions `json:"text,omitempty"`
-	Store             *bool                 `json:"store,omitempty"`
-	ServiceTier       *string               `json:"service_tier,omitempty"`
-	User              *string               `json:"user,omitempty"`
-	Metadata          map[string]string     `json:"metadata,omitempty"`
-	MaxOutputTokens   *int64                `json:"max_output_tokens,omitempty"`
-	Temperature       *float64              `json:"temperature,omitempty"`
-	TopP              *float64              `json:"top_p,omitempty"`
-	Reasoning         *ResponsesReasoning   `json:"reasoning,omitempty"`
+	Model             string                  `json:"model"`
+	Instructions      string                  `json:"instructions,omitempty"`
+	Input             ResponsesInput          `json:"input"`
+	Tools             []ResponsesTool         `json:"tools,omitempty"`
+	ToolChoice        *ResponsesToolChoice    `json:"tool_choice,omitempty"`
+	ParallelToolCalls *bool                   `json:"parallel_tool_calls,omitempty"`
+	Stream            *bool                   `json:"stream,omitempty"`
+	Text              *ResponsesTextOptions   `json:"text,omitempty"`
+	Store             *bool                   `json:"store,omitempty"`
+	ServiceTier       *string                 `json:"service_tier,omitempty"`
+	User              *string                 `json:"user,omitempty"`
+	Metadata          map[string]string       `json:"metadata,omitempty"`
+	MaxOutputTokens   *int64                  `json:"max_output_tokens,omitempty"`
+	Temperature       *float64                `json:"temperature,omitempty"`
+	TopP              *float64                `json:"top_p,omitempty"`
+	Reasoning         *ResponsesReasoning     `json:"reasoning,omitempty"`
+	Include           []string                `json:"include,omitempty"`
+	TopLogprobs       *int64                  `json:"top_logprobs,omitempty"`
+	StreamOptions     *ResponsesStreamOptions `json:"stream_options,omitempty"`
 }
 
 type ResponsesInput struct {
@@ -382,10 +457,17 @@ type ResponsesTextFormat struct {
 	Type   string          `json:"type,omitempty"`
 	Name   string          `json:"name,omitempty"`
 	Schema json.RawMessage `json:"schema,omitempty"`
+	Strict *bool           `json:"strict,omitempty"`
 }
 
 type ResponsesReasoning struct {
-	Effort string `json:"effort,omitempty"`
+	Effort    string  `json:"effort,omitempty"`
+	MaxTokens *int64  `json:"max_tokens,omitempty"`
+	Summary   *string `json:"summary,omitempty"`
+}
+
+type ResponsesStreamOptions struct {
+	IncludeObfuscation *bool `json:"include_obfuscation,omitempty"`
 }
 
 // ResponsesResponse represents the OpenAI Responses API response format.
@@ -427,12 +509,45 @@ type ResponsesStreamEvent struct {
 	ContentIndex   *int               `json:"content_index,omitempty"`
 	Delta          string             `json:"delta,omitempty"`
 	Text           string             `json:"text,omitempty"`
+	Refusal        string             `json:"refusal,omitempty"`
 	Name           string             `json:"name,omitempty"`
 	CallID         string             `json:"call_id,omitempty"`
 	Arguments      string             `json:"arguments,omitempty"`
 	SummaryIndex   *int               `json:"summary_index,omitempty"`
 	Code           string             `json:"code,omitempty"`
 	Message        string             `json:"message,omitempty"`
+	Logprobs       []ResponsesLogProb `json:"logprobs,omitempty"`
+}
+
+type ResponsesLogProb struct {
+	Token       string             `json:"token,omitempty"`
+	Logprob     float64            `json:"logprob,omitempty"`
+	TopLogprobs []ResponsesLogProb `json:"top_logprobs,omitempty"`
+}
+
+func convertResponsesLogprobs(src []ResponsesLogProb) *model.LogprobsContent {
+	if len(src) == 0 {
+		return nil
+	}
+	result := &model.LogprobsContent{Content: make([]model.TokenLogprob, 0, len(src))}
+	for _, lp := range src {
+		var tops []model.TopLogprob
+		if len(lp.TopLogprobs) > 0 {
+			tops = make([]model.TopLogprob, 0, len(lp.TopLogprobs))
+			for _, tlp := range lp.TopLogprobs {
+				tops = append(tops, model.TopLogprob{
+					Token:   tlp.Token,
+					Logprob: tlp.Logprob,
+				})
+			}
+		}
+		result.Content = append(result.Content, model.TokenLogprob{
+			Token:       lp.Token,
+			Logprob:     lp.Logprob,
+			TopLogprobs: tops,
+		})
+	}
+	return result
 }
 
 // Conversion functions
@@ -449,6 +564,13 @@ func ConvertToResponsesRequest(req *model.InternalLLMRequest) *ResponsesRequest 
 		Metadata:          req.Metadata,
 		MaxOutputTokens:   req.MaxCompletionTokens,
 		ParallelToolCalls: req.ParallelToolCalls,
+		Include:           req.Include,
+		TopLogprobs:       req.TopLogprobs,
+	}
+	if req.StreamOptions != nil {
+		result.StreamOptions = &ResponsesStreamOptions{
+			IncludeObfuscation: req.StreamOptions.IncludeObfuscation,
+		}
 	}
 
 	// Convert instructions from system messages
@@ -471,7 +593,8 @@ func ConvertToResponsesRequest(req *model.InternalLLMRequest) *ResponsesRequest 
 	if req.ResponseFormat != nil {
 		result.Text = &ResponsesTextOptions{
 			Format: &ResponsesTextFormat{
-				Type: req.ResponseFormat.Type,
+				Type:   req.ResponseFormat.Type,
+				Schema: req.ResponseFormat.JSONSchema,
 			},
 		}
 	}
@@ -479,7 +602,11 @@ func ConvertToResponsesRequest(req *model.InternalLLMRequest) *ResponsesRequest 
 	// Convert reasoning
 	if req.ReasoningEffort != "" || req.ReasoningBudget != nil {
 		result.Reasoning = &ResponsesReasoning{
-			Effort: req.ReasoningEffort,
+			Effort:    req.ReasoningEffort,
+			MaxTokens: req.ReasoningBudget,
+		}
+		if summary, ok := req.TransformerMetadata["reasoning_summary"]; ok {
+			result.Reasoning.Summary = &summary
 		}
 	}
 

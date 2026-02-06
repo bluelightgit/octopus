@@ -311,6 +311,9 @@ type StreamOptions struct {
 	// and the choices field will always be an empty array.
 	// All other chunks will also include a usage field, but with a null value.
 	IncludeUsage bool `json:"include_usage,omitempty"`
+
+	// IncludeObfuscation is Responses API specific stream option.
+	IncludeObfuscation *bool `json:"include_obfuscation,omitempty"`
 }
 
 type Stop struct {

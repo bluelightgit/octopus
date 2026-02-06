@@ -148,6 +148,11 @@ func (i *ResponseInbound) TransformStream(ctx context.Context, stream *model.Int
 			events = append(events, i.handleReasoningContent(choice.Delta.ReasoningContent)...)
 		}
 
+		// Handle refusal delta
+		if choice.Delta != nil && choice.Delta.Refusal != "" {
+			events = append(events, i.handleRefusal(choice.Delta.Refusal)...)
+		}
+
 		// Handle text content delta
 		if choice.Delta != nil && choice.Delta.Content.Content != nil && *choice.Delta.Content.Content != "" {
 			events = append(events, i.handleTextContent(choice.Delta.Content.Content)...)
@@ -260,6 +265,15 @@ func (i *ResponseInbound) handleReasoningContent(content *string) [][]byte {
 		ItemID:       &i.currentItemID,
 		OutputIndex:  lo.ToPtr(i.outputIndex),
 		SummaryIndex: lo.ToPtr(0),
+		Delta:        *content,
+	}))
+
+	// Emit reasoning_text.delta for clients expecting reasoning_text events.
+	events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
+		Type:         "response.reasoning_text.delta",
+		ItemID:       &i.currentItemID,
+		OutputIndex:  lo.ToPtr(i.outputIndex),
+		ContentIndex: &i.contentIndex,
 		Delta:        *content,
 	}))
 
@@ -429,6 +443,15 @@ func (i *ResponseInbound) closeReasoningItem() [][]byte {
 		Part:         &ResponsesContentPart{Type: "summary_text", Text: &fullReasoning},
 	}))
 
+	// Emit reasoning_text.done for clients expecting reasoning_text events.
+	events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
+		Type:         "response.reasoning_text.done",
+		ItemID:       &i.currentItemID,
+		OutputIndex:  lo.ToPtr(i.outputIndex),
+		ContentIndex: &i.contentIndex,
+		Text:         fullReasoning,
+	}))
+
 	// Emit output_item.done
 	item := ResponsesItem{
 		ID:   i.currentItemID,
@@ -497,6 +520,29 @@ func (i *ResponseInbound) closeCurrentContentPart() [][]byte {
 
 	var events [][]byte
 	i.hasContentPartStarted = false
+	if i.accumulatedText.Len() == 0 && i.hasMessageItemStarted {
+		// Emit refusal.done when only refusal content is present.
+		events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
+			Type:         "response.refusal.done",
+			ItemID:       &i.currentItemID,
+			OutputIndex:  lo.ToPtr(i.outputIndex),
+			ContentIndex: &i.contentIndex,
+			Refusal:      "",
+		}))
+
+		events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
+			Type:         "response.content_part.done",
+			ItemID:       &i.currentItemID,
+			OutputIndex:  lo.ToPtr(i.outputIndex),
+			ContentIndex: &i.contentIndex,
+			Part: &ResponsesContentPart{
+				Type:    "refusal",
+				Refusal: lo.ToPtr(""),
+			},
+		}))
+
+		return events
+	}
 	fullText := i.accumulatedText.String()
 
 	// Emit output_text.done
@@ -701,24 +747,83 @@ func formatSSEData(data []byte) []byte {
 // Request types
 
 type ResponsesRequest struct {
-	Model             string                `json:"model"`
-	Instructions      string                `json:"instructions,omitempty"`
-	Input             ResponsesInput        `json:"input"`
-	Tools             []ResponsesTool       `json:"tools,omitempty"`
-	ToolChoice        *ResponsesToolChoice  `json:"tool_choice,omitempty"`
-	ParallelToolCalls *bool                 `json:"parallel_tool_calls,omitempty"`
-	Stream            *bool                 `json:"stream,omitempty"`
-	Text              *ResponsesTextOptions `json:"text,omitempty"`
-	Store             *bool                 `json:"store,omitempty"`
-	ServiceTier       *string               `json:"service_tier,omitempty"`
-	User              *string               `json:"user,omitempty"`
-	Metadata          map[string]string     `json:"metadata,omitempty"`
-	MaxOutputTokens   *int64                `json:"max_output_tokens,omitempty"`
-	Temperature       *float64              `json:"temperature,omitempty"`
-	TopP              *float64              `json:"top_p,omitempty"`
-	Reasoning         *ResponsesReasoning   `json:"reasoning,omitempty"`
-	Include           []string              `json:"include,omitempty"`
-	TopLogprobs       *int64                `json:"top_logprobs,omitempty"`
+	Model             string                  `json:"model"`
+	Instructions      string                  `json:"instructions,omitempty"`
+	Input             ResponsesInput          `json:"input"`
+	Tools             []ResponsesTool         `json:"tools,omitempty"`
+	ToolChoice        *ResponsesToolChoice    `json:"tool_choice,omitempty"`
+	ParallelToolCalls *bool                   `json:"parallel_tool_calls,omitempty"`
+	Stream            *bool                   `json:"stream,omitempty"`
+	Text              *ResponsesTextOptions   `json:"text,omitempty"`
+	Store             *bool                   `json:"store,omitempty"`
+	ServiceTier       *string                 `json:"service_tier,omitempty"`
+	User              *string                 `json:"user,omitempty"`
+	Metadata          map[string]string       `json:"metadata,omitempty"`
+	MaxOutputTokens   *int64                  `json:"max_output_tokens,omitempty"`
+	Temperature       *float64                `json:"temperature,omitempty"`
+	TopP              *float64                `json:"top_p,omitempty"`
+	Reasoning         *ResponsesReasoning     `json:"reasoning,omitempty"`
+	Include           []string                `json:"include,omitempty"`
+	TopLogprobs       *int64                  `json:"top_logprobs,omitempty"`
+	StreamOptions     *ResponsesStreamOptions `json:"stream_options,omitempty"`
+}
+
+func (i *ResponseInbound) handleRefusal(refusal string) [][]byte {
+	if refusal == "" {
+		return nil
+	}
+
+	var events [][]byte
+
+	// Close reasoning item if it was started.
+	if i.hasReasoningItemStarted {
+		events = append(events, i.closeReasoningItem()...)
+	}
+
+	// Start message output item if not started.
+	if !i.hasMessageItemStarted {
+		i.hasMessageItemStarted = true
+		i.currentItemID = generateItemID()
+
+		events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
+			Type:        "response.output_item.added",
+			OutputIndex: lo.ToPtr(i.outputIndex),
+			Item: &ResponsesItem{
+				ID:      i.currentItemID,
+				Type:    "message",
+				Status:  lo.ToPtr("in_progress"),
+				Role:    "assistant",
+				Content: &ResponsesInput{Items: []ResponsesItem{}},
+			},
+		}))
+	}
+
+	// Start content part if not started.
+	if !i.hasContentPartStarted {
+		i.hasContentPartStarted = true
+
+		events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
+			Type:         "response.content_part.added",
+			ItemID:       &i.currentItemID,
+			OutputIndex:  lo.ToPtr(i.outputIndex),
+			ContentIndex: &i.contentIndex,
+			Part: &ResponsesContentPart{
+				Type:    "refusal",
+				Refusal: lo.ToPtr(""),
+			},
+		}))
+	}
+
+	// Emit refusal.delta.
+	events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
+		Type:         "response.refusal.delta",
+		ItemID:       &i.currentItemID,
+		OutputIndex:  lo.ToPtr(i.outputIndex),
+		ContentIndex: &i.contentIndex,
+		Refusal:      refusal,
+	}))
+
+	return events
 }
 
 type ResponsesInput struct {
@@ -875,11 +980,17 @@ type ResponsesTextFormat struct {
 	Type   string          `json:"type,omitempty"`
 	Name   string          `json:"name,omitempty"`
 	Schema json.RawMessage `json:"schema,omitempty"`
+	Strict *bool           `json:"strict,omitempty"`
 }
 
 type ResponsesReasoning struct {
-	Effort    string `json:"effort,omitempty"`
-	MaxTokens *int64 `json:"max_tokens,omitempty"`
+	Effort    string  `json:"effort,omitempty"`
+	MaxTokens *int64  `json:"max_tokens,omitempty"`
+	Summary   *string `json:"summary,omitempty"`
+}
+
+type ResponsesStreamOptions struct {
+	IncludeObfuscation *bool `json:"include_obfuscation,omitempty"`
 }
 
 // Response types
@@ -922,16 +1033,25 @@ type ResponsesStreamEvent struct {
 	ContentIndex   *int                  `json:"content_index,omitempty"`
 	Delta          string                `json:"delta,omitempty"`
 	Text           string                `json:"text,omitempty"`
+	Refusal        string                `json:"refusal,omitempty"`
 	Name           string                `json:"name,omitempty"`
 	CallID         string                `json:"call_id,omitempty"`
 	Arguments      string                `json:"arguments,omitempty"`
 	SummaryIndex   *int                  `json:"summary_index,omitempty"`
 	Part           *ResponsesContentPart `json:"part,omitempty"`
+	Logprobs       []ResponsesLogProb    `json:"logprobs,omitempty"`
+}
+
+type ResponsesLogProb struct {
+	Token       string             `json:"token,omitempty"`
+	Logprob     float64            `json:"logprob,omitempty"`
+	TopLogprobs []ResponsesLogProb `json:"top_logprobs,omitempty"`
 }
 
 type ResponsesContentPart struct {
 	Type        string                `json:"type"`
 	Text        *string               `json:"text,omitempty"`
+	Refusal     *string               `json:"refusal,omitempty"`
 	Annotations []ResponsesAnnotation `json:"annotations,omitempty"`
 }
 
@@ -952,6 +1072,12 @@ func convertToInternalRequest(req *ResponsesRequest) (*model.InternalLLMRequest,
 		RawAPIFormat:        model.APIFormatOpenAIResponse,
 		TransformerMetadata: map[string]string{},
 	}
+	chatReq.Include = req.Include
+	if req.StreamOptions != nil && req.StreamOptions.IncludeObfuscation != nil {
+		chatReq.StreamOptions = &model.StreamOptions{
+			IncludeObfuscation: req.StreamOptions.IncludeObfuscation,
+		}
+	}
 
 	if req.Input.Text == nil && len(req.Input.Items) > 0 {
 		chatReq.TransformOptions.ArrayInputs = lo.ToPtr(true)
@@ -964,6 +1090,9 @@ func convertToInternalRequest(req *ResponsesRequest) (*model.InternalLLMRequest,
 		}
 		if req.Reasoning.MaxTokens != nil {
 			chatReq.ReasoningBudget = req.Reasoning.MaxTokens
+		}
+		if req.Reasoning.Summary != nil {
+			chatReq.TransformerMetadata["reasoning_summary"] = *req.Reasoning.Summary
 		}
 	}
 
@@ -1003,7 +1132,8 @@ func convertToInternalRequest(req *ResponsesRequest) (*model.InternalLLMRequest,
 	// Convert text format
 	if req.Text != nil && req.Text.Format != nil && req.Text.Format.Type != "" {
 		chatReq.ResponseFormat = &model.ResponseFormat{
-			Type: req.Text.Format.Type,
+			Type:       req.Text.Format.Type,
+			JSONSchema: req.Text.Format.Schema,
 		}
 	}
 
