@@ -45,6 +45,10 @@ type ResponseInbound struct {
 	// Usage tracking
 	usage *model.Usage
 
+	// Terminal response event tracking
+	finalResponseStatus    string
+	finalResponseEventType string
+
 	// Stream chunks storage for aggregation
 	streamChunks []*model.InternalLLMResponse
 	// storedResponse stores the non-stream response
@@ -86,7 +90,16 @@ func (i *ResponseInbound) TransformResponse(ctx context.Context, response *model
 func (i *ResponseInbound) TransformStream(ctx context.Context, stream *model.InternalLLMResponse) ([]byte, error) {
 	// Handle [DONE] marker
 	if stream.Object == "[DONE]" {
-		return []byte("data: [DONE]\n\n"), nil
+		result := make([]byte, 0)
+
+		if i.hasFinished && !i.responseCompleted {
+			if terminalEvent := i.emitResponseTerminalEvent(); terminalEvent != nil {
+				result = append(result, terminalEvent...)
+			}
+		}
+
+		result = append(result, []byte("data: [DONE]\n\n")...)
+		return result, nil
 	}
 
 	// Store the chunk for aggregation
@@ -166,6 +179,7 @@ func (i *ResponseInbound) TransformStream(ctx context.Context, stream *model.Int
 		// Handle finish reason
 		if choice.FinishReason != nil && !i.hasFinished {
 			i.hasFinished = true
+			i.setTerminalStatus(*choice.FinishReason)
 
 			// Close any open content parts and output items
 			events = append(events, i.closeCurrentContentPart()...)
@@ -173,26 +187,11 @@ func (i *ResponseInbound) TransformStream(ctx context.Context, stream *model.Int
 		}
 	}
 
-	// Handle final usage chunk and complete response
-	if stream.Usage != nil && i.hasFinished && !i.responseCompleted {
-		i.responseCompleted = true
-		i.usage = stream.Usage
-
-		status := "completed"
-		response := &ResponsesResponse{
-			Object:    "response",
-			ID:        i.responseID,
-			Model:     i.model,
-			CreatedAt: i.createdAt,
-			Status:    &status,
-			Output:    []ResponsesItem{},
-			Usage:     convertUsageToResponses(i.usage),
+	// Emit a terminal response event when usage arrives after finish.
+	if i.hasFinished && !i.responseCompleted && stream.Usage != nil {
+		if terminalEvent := i.emitResponseTerminalEvent(); terminalEvent != nil {
+			events = append(events, terminalEvent)
 		}
-
-		events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
-			Type:     "response.completed",
-			Response: response,
-		}))
 	}
 
 	if len(events) == 0 {
@@ -220,6 +219,52 @@ func (i *ResponseInbound) enqueueEvent(ev *ResponsesStreamEvent) []byte {
 	}
 
 	return formatSSEData(data)
+}
+
+func (i *ResponseInbound) setTerminalStatus(finishReason string) {
+	switch finishReason {
+	case "length":
+		i.finalResponseStatus = "incomplete"
+		i.finalResponseEventType = "response.incomplete"
+	case "error":
+		i.finalResponseStatus = "failed"
+		i.finalResponseEventType = "response.failed"
+	default:
+		i.finalResponseStatus = "completed"
+		i.finalResponseEventType = "response.completed"
+	}
+}
+
+func (i *ResponseInbound) emitResponseTerminalEvent() []byte {
+	if i.responseCompleted {
+		return nil
+	}
+
+	i.responseCompleted = true
+
+	status := i.finalResponseStatus
+	eventType := i.finalResponseEventType
+	if status == "" {
+		status = "completed"
+	}
+	if eventType == "" {
+		eventType = "response.completed"
+	}
+
+	response := &ResponsesResponse{
+		Object:    "response",
+		ID:        i.responseID,
+		Model:     i.model,
+		CreatedAt: i.createdAt,
+		Status:    &status,
+		Output:    []ResponsesItem{},
+		Usage:     convertUsageToResponses(i.usage),
+	}
+
+	return i.enqueueEvent(&ResponsesStreamEvent{
+		Type:     eventType,
+		Response: response,
+	})
 }
 
 func (i *ResponseInbound) handleReasoningContent(content *string) [][]byte {
