@@ -36,6 +36,7 @@ type ResponseInbound struct {
 	// Content accumulation
 	accumulatedText      strings.Builder
 	accumulatedReasoning strings.Builder
+	accumulatedRefusal   strings.Builder
 
 	// Tool call tracking
 	toolCalls           map[int]*model.ToolCall
@@ -554,6 +555,7 @@ func (i *ResponseInbound) closeMessageItem() [][]byte {
 	i.outputIndex++
 	i.contentIndex = 0
 	i.accumulatedText.Reset()
+	i.accumulatedRefusal.Reset()
 
 	return events
 }
@@ -565,14 +567,16 @@ func (i *ResponseInbound) closeCurrentContentPart() [][]byte {
 
 	var events [][]byte
 	i.hasContentPartStarted = false
-	if i.accumulatedText.Len() == 0 && i.hasMessageItemStarted {
-		// Emit refusal.done when only refusal content is present.
+	if i.accumulatedRefusal.Len() > 0 && i.hasMessageItemStarted {
+		fullRefusal := i.accumulatedRefusal.String()
+
+		// Emit refusal.done when refusal content is present.
 		events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
 			Type:         "response.refusal.done",
 			ItemID:       &i.currentItemID,
 			OutputIndex:  lo.ToPtr(i.outputIndex),
 			ContentIndex: &i.contentIndex,
-			Refusal:      "",
+			Refusal:      fullRefusal,
 		}))
 
 		events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
@@ -582,10 +586,11 @@ func (i *ResponseInbound) closeCurrentContentPart() [][]byte {
 			ContentIndex: &i.contentIndex,
 			Part: &ResponsesContentPart{
 				Type:    "refusal",
-				Refusal: lo.ToPtr(""),
+				Refusal: lo.ToPtr(fullRefusal),
 			},
 		}))
 
+		i.accumulatedRefusal.Reset()
 		return events
 	}
 	fullText := i.accumulatedText.String()
@@ -859,13 +864,16 @@ func (i *ResponseInbound) handleRefusal(refusal string) [][]byte {
 		}))
 	}
 
-	// Emit refusal.delta.
+	// Accumulate refusal content.
+	i.accumulatedRefusal.WriteString(refusal)
+
+	// Emit refusal.delta with the standard `delta` field.
 	events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
 		Type:         "response.refusal.delta",
 		ItemID:       &i.currentItemID,
 		OutputIndex:  lo.ToPtr(i.outputIndex),
 		ContentIndex: &i.contentIndex,
-		Refusal:      refusal,
+		Delta:        refusal,
 	}))
 
 	return events

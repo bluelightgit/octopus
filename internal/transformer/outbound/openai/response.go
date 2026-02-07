@@ -242,8 +242,34 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 			},
 		}
 
-	case "response.refusal.delta", "response.refusal.done":
+	case "response.refusal.delta":
+		text := streamEvent.Delta
+		if text == "" {
+			// Backward compatibility with non-standard senders.
+			text = streamEvent.Refusal
+		}
+		if text == "" {
+			text = streamEvent.Text
+		}
+		if text == "" {
+			return nil, nil
+		}
+		resp.Choices = []model.Choice{
+			{
+				Index: 0,
+				Delta: &model.Message{
+					Role:    "assistant",
+					Refusal: text,
+				},
+			},
+		}
+
+	case "response.refusal.done":
 		text := streamEvent.Refusal
+		if text == "" {
+			// Backward compatibility with non-standard senders.
+			text = streamEvent.Delta
+		}
 		if text == "" {
 			text = streamEvent.Text
 		}
