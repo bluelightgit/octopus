@@ -26,6 +26,11 @@ type ResponseOutbound struct {
 	seenOutputTextDelta map[string]bool
 	seenReasoningDelta  map[string]bool
 	seenRefusalDelta    map[string]bool
+
+	// Track which reasoning stream "family" we chose per item to avoid emitting the
+	// same content twice when an upstream sends both reasoning_summary_* and
+	// reasoning_text_* events for the same reasoning item.
+	reasoningPrimary map[string]string
 }
 
 func (o *ResponseOutbound) TransformRequest(ctx context.Context, request *model.InternalLLMRequest, baseUrl, key string) (*http.Request, error) {
@@ -144,6 +149,7 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 		o.seenOutputTextDelta = make(map[string]bool)
 		o.seenReasoningDelta = make(map[string]bool)
 		o.seenRefusalDelta = make(map[string]bool)
+		o.reasoningPrimary = make(map[string]string)
 	}
 
 	// Parse the streaming event
@@ -278,6 +284,12 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 		}
 
 	case "response.reasoning_summary_text.delta":
+		itemKey := streamItemKey(streamEvent.ItemID, streamEvent.OutputIndex)
+		if primary, ok := o.reasoningPrimary[itemKey]; ok && primary != "summary" {
+			return nil, nil
+		}
+		o.reasoningPrimary[itemKey] = "summary"
+
 		if streamEvent.Delta == "" {
 			return nil, nil
 		}
@@ -292,6 +304,12 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 		}
 
 	case "response.reasoning_text.delta":
+		itemKey := streamItemKey(streamEvent.ItemID, streamEvent.OutputIndex)
+		if primary, ok := o.reasoningPrimary[itemKey]; ok && primary != "text" {
+			return nil, nil
+		}
+		o.reasoningPrimary[itemKey] = "text"
+
 		o.seenReasoningDelta[streamContentKey(streamEvent.ItemID, streamEvent.OutputIndex, streamEvent.ContentIndex)] = true
 
 		text := streamEvent.Delta
@@ -312,6 +330,11 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 		}
 
 	case "response.reasoning_text.done":
+		itemKey := streamItemKey(streamEvent.ItemID, streamEvent.OutputIndex)
+		if primary, ok := o.reasoningPrimary[itemKey]; ok && primary != "text" {
+			return nil, nil
+		}
+
 		key := streamContentKey(streamEvent.ItemID, streamEvent.OutputIndex, streamEvent.ContentIndex)
 		if o.seenReasoningDelta[key] {
 			return nil, nil
@@ -435,6 +458,13 @@ func streamContentKey(itemID *string, outputIndex int, contentIndex *int) string
 		ci = "content_index=" + strconv.Itoa(*contentIndex)
 	}
 	return id + "|" + ci
+}
+
+func streamItemKey(itemID *string, outputIndex int) string {
+	if itemID != nil && *itemID != "" {
+		return *itemID
+	}
+	return "output_index=" + strconv.Itoa(outputIndex)
 }
 
 // ResponsesRequest represents the OpenAI Responses API request format.
