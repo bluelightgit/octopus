@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -335,6 +336,11 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		return fmt.Errorf("upstream returned non-SSE content-type %q for stream request: %s", ct, string(body))
 	}
 
+	passthroughResponsesSSE := ra.shouldPassthroughResponsesSSE()
+	if passthroughResponsesSSE {
+		log.Infof("responses SSE passthrough enabled for channel %s", ra.channel.Name)
+	}
+
 	// 设置 SSE 响应头
 	ra.c.Header("Content-Type", "text/event-stream")
 	ra.c.Header("Cache-Control", "no-cache")
@@ -391,9 +397,32 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				return fmt.Errorf("failed to read stream event: %w", r.err)
 			}
 
-			data, err := ra.transformStreamData(ctx, r.data)
-			if err != nil || len(data) == 0 {
-				continue
+			var (
+				data []byte
+				err  error
+			)
+
+			if passthroughResponsesSSE {
+				if r.data == "" {
+					continue
+				}
+				ra.tapStreamForMetrics(ctx, r.data)
+				data = formatSSEDataString(r.data)
+
+				// Stop early once the upstream signals completion.
+				if strings.TrimSpace(r.data) == "[DONE]" {
+					if firstToken {
+						ra.metrics.SetFirstTokenTime(time.Now())
+					}
+					ra.c.Writer.Write(data)
+					ra.c.Writer.Flush()
+					return nil
+				}
+			} else {
+				data, err = ra.transformStreamData(ctx, r.data)
+				if err != nil || len(data) == 0 {
+					continue
+				}
 			}
 			if firstToken {
 				ra.metrics.SetFirstTokenTime(time.Now())
@@ -414,6 +443,96 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			ra.c.Writer.Flush()
 		}
 	}
+}
+
+func (ra *relayAttempt) shouldPassthroughResponsesSSE() bool {
+	if ra == nil || ra.internalRequest == nil || ra.channel == nil {
+		return false
+	}
+	if ra.internalRequest.RawAPIFormat != model.APIFormatOpenAIResponse {
+		return false
+	}
+	if ra.channel.Type != outbound.OutboundTypeOpenAIResponse {
+		return false
+	}
+	if ra.internalRequest.Stream == nil || !*ra.internalRequest.Stream {
+		return false
+	}
+	return true
+}
+
+func (ra *relayAttempt) tapStreamForMetrics(ctx context.Context, data string) {
+	internalStream, err := ra.outAdapter.TransformStream(ctx, []byte(data))
+	if err != nil {
+		log.Warnf("failed to tap outbound stream for metrics: %v", err)
+		return
+	}
+	if internalStream != nil {
+		// Feed the internal chunk into inbound adapter so GetInternalResponse() can
+		// later aggregate a complete response for metrics/logging.
+		if _, err := ra.inAdapter.TransformStream(ctx, internalStream); err != nil {
+			log.Warnf("failed to tap inbound stream for metrics: %v", err)
+		}
+
+		// Ensure usage is recorded even if aggregation fails later.
+		if internalStream.Usage != nil && (ra.metrics == nil || ra.metrics.InternalResponse == nil || ra.metrics.InternalResponse.Usage == nil) {
+			if ra.metrics != nil {
+				ra.metrics.SetInternalResponse(&model.InternalLLMResponse{Usage: internalStream.Usage}, ra.internalRequest.Model)
+			}
+		}
+		return
+	}
+
+	// Fallback: try to parse usage directly from Responses stream events.
+	if ra.metrics == nil {
+		return
+	}
+	if ra.metrics.InternalResponse != nil && ra.metrics.InternalResponse.Usage != nil {
+		return
+	}
+	// Avoid JSON parsing on non-usage events.
+	if !strings.Contains(data, `"usage"`) {
+		return
+	}
+
+	var raw struct {
+		Response struct {
+			Usage *struct {
+				InputTokens        int64 `json:"input_tokens"`
+				OutputTokens       int64 `json:"output_tokens"`
+				TotalTokens        int64 `json:"total_tokens"`
+				InputTokensDetails struct {
+					CachedTokens int64 `json:"cached_tokens"`
+				} `json:"input_tokens_details"`
+				OutputTokensDetails struct {
+					ReasoningTokens int64 `json:"reasoning_tokens"`
+				} `json:"output_tokens_details"`
+			} `json:"usage"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal([]byte(data), &raw); err != nil || raw.Response.Usage == nil {
+		return
+	}
+	usage := &model.Usage{
+		PromptTokens:     raw.Response.Usage.InputTokens,
+		CompletionTokens: raw.Response.Usage.OutputTokens,
+		TotalTokens:      raw.Response.Usage.TotalTokens,
+	}
+	usage.PromptTokensDetails = &model.PromptTokensDetails{CachedTokens: raw.Response.Usage.InputTokensDetails.CachedTokens}
+	usage.CompletionTokensDetails = &model.CompletionTokensDetails{ReasoningTokens: raw.Response.Usage.OutputTokensDetails.ReasoningTokens}
+	ra.metrics.SetInternalResponse(&model.InternalLLMResponse{Usage: usage}, ra.internalRequest.Model)
+}
+
+func formatSSEDataString(data string) []byte {
+	lines := strings.Split(data, "\n")
+	var sb strings.Builder
+	for _, line := range lines {
+		sb.WriteString("data: ")
+		sb.WriteString(line)
+		sb.WriteString("\n")
+	}
+	sb.WriteString("\n")
+	return []byte(sb.String())
 }
 
 // transformStreamData 转换流式数据
