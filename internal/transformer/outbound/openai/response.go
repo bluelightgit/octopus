@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/samber/lo"
@@ -21,6 +22,10 @@ type ResponseOutbound struct {
 	streamID    string
 	streamModel string
 	initialized bool
+
+	seenOutputTextDelta map[string]bool
+	seenReasoningDelta  map[string]bool
+	seenRefusalDelta    map[string]bool
 }
 
 func (o *ResponseOutbound) TransformRequest(ctx context.Context, request *model.InternalLLMRequest, baseUrl, key string) (*http.Request, error) {
@@ -110,6 +115,9 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 	// Initialize state if needed
 	if !o.initialized {
 		o.initialized = true
+		o.seenOutputTextDelta = make(map[string]bool)
+		o.seenReasoningDelta = make(map[string]bool)
+		o.seenRefusalDelta = make(map[string]bool)
 	}
 
 	// Parse the streaming event
@@ -143,6 +151,8 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 		}
 
 	case "response.output_text.delta":
+		o.seenOutputTextDelta[streamContentKey(streamEvent.ItemID, streamEvent.OutputIndex, streamEvent.ContentIndex)] = true
+
 		deltaText := streamEvent.Delta
 		if deltaText == "" {
 			deltaText = streamEvent.Text
@@ -157,6 +167,37 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 					Role: "assistant",
 					Content: model.MessageContent{
 						Content: lo.ToPtr(deltaText),
+					},
+				},
+			},
+		}
+		if len(streamEvent.Logprobs) > 0 {
+			resp.Choices[0].Logprobs = convertResponsesLogprobs(streamEvent.Logprobs)
+		}
+
+	case "response.output_text.done":
+		key := streamContentKey(streamEvent.ItemID, streamEvent.OutputIndex, streamEvent.ContentIndex)
+		if o.seenOutputTextDelta[key] {
+			return nil, nil
+		}
+
+		text := streamEvent.Text
+		if text == "" {
+			// Backward compatibility with non-standard senders.
+			text = streamEvent.Delta
+		}
+		if text == "" {
+			return nil, nil
+		}
+		o.seenOutputTextDelta[key] = true
+
+		resp.Choices = []model.Choice{
+			{
+				Index: 0,
+				Delta: &model.Message{
+					Role: "assistant",
+					Content: model.MessageContent{
+						Content: lo.ToPtr(text),
 					},
 				},
 			},
@@ -224,7 +265,9 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 			},
 		}
 
-	case "response.reasoning_text.delta", "response.reasoning_text.done":
+	case "response.reasoning_text.delta":
+		o.seenReasoningDelta[streamContentKey(streamEvent.ItemID, streamEvent.OutputIndex, streamEvent.ContentIndex)] = true
+
 		text := streamEvent.Delta
 		if text == "" {
 			text = streamEvent.Text
@@ -242,7 +285,32 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 			},
 		}
 
+	case "response.reasoning_text.done":
+		key := streamContentKey(streamEvent.ItemID, streamEvent.OutputIndex, streamEvent.ContentIndex)
+		if o.seenReasoningDelta[key] {
+			return nil, nil
+		}
+		text := streamEvent.Text
+		if text == "" {
+			text = streamEvent.Delta
+		}
+		if text == "" {
+			return nil, nil
+		}
+		o.seenReasoningDelta[key] = true
+		resp.Choices = []model.Choice{
+			{
+				Index: 0,
+				Delta: &model.Message{
+					Role:             "assistant",
+					ReasoningContent: lo.ToPtr(text),
+				},
+			},
+		}
+
 	case "response.refusal.delta":
+		o.seenRefusalDelta[streamContentKey(streamEvent.ItemID, streamEvent.OutputIndex, streamEvent.ContentIndex)] = true
+
 		text := streamEvent.Delta
 		if text == "" {
 			// Backward compatibility with non-standard senders.
@@ -265,6 +333,10 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 		}
 
 	case "response.refusal.done":
+		key := streamContentKey(streamEvent.ItemID, streamEvent.OutputIndex, streamEvent.ContentIndex)
+		if o.seenRefusalDelta[key] {
+			return nil, nil
+		}
 		text := streamEvent.Refusal
 		if text == "" {
 			// Backward compatibility with non-standard senders.
@@ -276,6 +348,7 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 		if text == "" {
 			return nil, nil
 		}
+		o.seenRefusalDelta[key] = true
 		resp.Choices = []model.Choice{
 			{
 				Index: 0,
@@ -284,29 +357,6 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 					Refusal: text,
 				},
 			},
-		}
-
-	case "response.output_text.done":
-		text := streamEvent.Text
-		if text == "" {
-			text = streamEvent.Delta
-		}
-		if text == "" {
-			return nil, nil
-		}
-		resp.Choices = []model.Choice{
-			{
-				Index: 0,
-				Delta: &model.Message{
-					Role: "assistant",
-					Content: model.MessageContent{
-						Content: lo.ToPtr(text),
-					},
-				},
-			},
-		}
-		if len(streamEvent.Logprobs) > 0 {
-			resp.Choices[0].Logprobs = convertResponsesLogprobs(streamEvent.Logprobs)
 		}
 
 	case "response.completed":
@@ -347,6 +397,18 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 	}
 
 	return resp, nil
+}
+
+func streamContentKey(itemID *string, outputIndex int, contentIndex *int) string {
+	id := "output_index=" + strconv.Itoa(outputIndex)
+	if itemID != nil && *itemID != "" {
+		id = *itemID
+	}
+	ci := "content_index=?"
+	if contentIndex != nil {
+		ci = "content_index=" + strconv.Itoa(*contentIndex)
+	}
+	return id + "|" + ci
 }
 
 // ResponsesRequest represents the OpenAI Responses API request format.
