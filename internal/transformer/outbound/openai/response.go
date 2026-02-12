@@ -23,9 +23,11 @@ type ResponseOutbound struct {
 	streamModel string
 	initialized bool
 
-	seenOutputTextDelta map[string]bool
-	seenReasoningDelta  map[string]bool
-	seenRefusalDelta    map[string]bool
+	seenOutputTextDelta       map[string]bool
+	seenReasoningDelta        map[string]bool
+	seenReasoningSummaryDelta map[string]bool
+	seenRefusalDelta          map[string]bool
+	seenFunctionArgsDelta     map[string]bool
 
 	// Track which reasoning stream "family" we chose per item to avoid emitting the
 	// same content twice when an upstream sends both reasoning_summary_* and
@@ -148,7 +150,9 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 		o.initialized = true
 		o.seenOutputTextDelta = make(map[string]bool)
 		o.seenReasoningDelta = make(map[string]bool)
+		o.seenReasoningSummaryDelta = make(map[string]bool)
 		o.seenRefusalDelta = make(map[string]bool)
+		o.seenFunctionArgsDelta = make(map[string]bool)
 		o.reasoningPrimary = make(map[string]string)
 	}
 
@@ -239,6 +243,15 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 		}
 
 	case "response.function_call_arguments.delta":
+		argsDelta := streamEvent.Delta
+		if argsDelta == "" {
+			argsDelta = streamEvent.Arguments
+		}
+		if argsDelta == "" {
+			return nil, nil
+		}
+		toolKey := streamItemKey(streamEvent.ItemID, streamEvent.OutputIndex) + "|call_id=" + streamEvent.CallID
+		o.seenFunctionArgsDelta[toolKey] = true
 		resp.Choices = []model.Choice{
 			{
 				Index: 0,
@@ -251,7 +264,40 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 							Type:  "function",
 							Function: model.FunctionCall{
 								Name:      streamEvent.Name,
-								Arguments: streamEvent.Delta,
+								Arguments: argsDelta,
+							},
+						},
+					},
+				},
+			},
+		}
+
+	case "response.function_call_arguments.done":
+		toolKey := streamItemKey(streamEvent.ItemID, streamEvent.OutputIndex) + "|call_id=" + streamEvent.CallID
+		if o.seenFunctionArgsDelta[toolKey] {
+			return nil, nil
+		}
+		args := streamEvent.Arguments
+		if args == "" {
+			args = streamEvent.Delta
+		}
+		if args == "" {
+			return nil, nil
+		}
+		o.seenFunctionArgsDelta[toolKey] = true
+		resp.Choices = []model.Choice{
+			{
+				Index: 0,
+				Delta: &model.Message{
+					Role: "assistant",
+					ToolCalls: []model.ToolCall{
+						{
+							Index: streamEvent.OutputIndex,
+							ID:    streamEvent.CallID,
+							Type:  "function",
+							Function: model.FunctionCall{
+								Name:      streamEvent.Name,
+								Arguments: args,
 							},
 						},
 					},
@@ -293,12 +339,52 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 		if streamEvent.Delta == "" {
 			return nil, nil
 		}
+		summaryIndex := -1
+		if streamEvent.SummaryIndex != nil {
+			summaryIndex = *streamEvent.SummaryIndex
+		}
+		summaryKey := itemKey + "|summary_index=" + strconv.Itoa(summaryIndex)
+		o.seenReasoningSummaryDelta[summaryKey] = true
 		resp.Choices = []model.Choice{
 			{
 				Index: 0,
 				Delta: &model.Message{
 					Role:             "assistant",
 					ReasoningContent: lo.ToPtr(streamEvent.Delta),
+				},
+			},
+		}
+
+	case "response.reasoning_summary_text.done":
+		itemKey := streamItemKey(streamEvent.ItemID, streamEvent.OutputIndex)
+		if primary, ok := o.reasoningPrimary[itemKey]; ok && primary != "summary" {
+			return nil, nil
+		}
+		o.reasoningPrimary[itemKey] = "summary"
+
+		summaryIndex := -1
+		if streamEvent.SummaryIndex != nil {
+			summaryIndex = *streamEvent.SummaryIndex
+		}
+		summaryKey := itemKey + "|summary_index=" + strconv.Itoa(summaryIndex)
+		if o.seenReasoningSummaryDelta[summaryKey] {
+			return nil, nil
+		}
+
+		text := streamEvent.Text
+		if text == "" {
+			text = streamEvent.Delta
+		}
+		if text == "" {
+			return nil, nil
+		}
+		o.seenReasoningSummaryDelta[summaryKey] = true
+		resp.Choices = []model.Choice{
+			{
+				Index: 0,
+				Delta: &model.Message{
+					Role:             "assistant",
+					ReasoningContent: lo.ToPtr(text),
 				},
 			},
 		}
@@ -334,6 +420,7 @@ func (o *ResponseOutbound) TransformStream(ctx context.Context, eventData []byte
 		if primary, ok := o.reasoningPrimary[itemKey]; ok && primary != "text" {
 			return nil, nil
 		}
+		o.reasoningPrimary[itemKey] = "text"
 
 		key := streamContentKey(streamEvent.ItemID, streamEvent.OutputIndex, streamEvent.ContentIndex)
 		if o.seenReasoningDelta[key] {
