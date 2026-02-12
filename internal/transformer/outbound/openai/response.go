@@ -41,6 +41,11 @@ func (o *ResponseOutbound) TransformRequest(ctx context.Context, request *model.
 		return nil, fmt.Errorf("failed to marshal responses api request: %w", err)
 	}
 
+	body, err = mergeExtraBodyIntoJSON(body, request.ExtraBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to merge responses extra body: %w", err)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -61,6 +66,27 @@ func (o *ResponseOutbound) TransformRequest(ctx context.Context, request *model.
 	req.Method = http.MethodPost
 
 	return req, nil
+}
+
+func mergeExtraBodyIntoJSON(body []byte, extra json.RawMessage) ([]byte, error) {
+	if len(extra) == 0 {
+		return body, nil
+	}
+	var baseObj map[string]any
+	if err := json.Unmarshal(body, &baseObj); err != nil {
+		return nil, err
+	}
+	var extraObj map[string]any
+	if err := json.Unmarshal(extra, &extraObj); err != nil {
+		return nil, err
+	}
+	if len(extraObj) == 0 {
+		return body, nil
+	}
+	for k, v := range extraObj {
+		baseObj[k] = v
+	}
+	return json.Marshal(baseObj)
 }
 
 func (o *ResponseOutbound) TransformResponse(ctx context.Context, response *http.Response) (*model.InternalLLMResponse, error) {
