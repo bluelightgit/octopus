@@ -16,7 +16,13 @@ import (
 type ChatOutbound struct{}
 
 func (o *ChatOutbound) TransformRequest(ctx context.Context, request *model.InternalLLMRequest, baseUrl, key string) (*http.Request, error) {
-	request.ClearHelpFields()
+	// Same-protocol passthrough: preserve raw Chat Completions request fields.
+	var body []byte
+	var err error
+	if request != nil && request.RawAPIFormat == model.APIFormatOpenAIChatCompletion && len(request.RawRequest) > 0 {
+		body = request.RawRequest
+	} else {
+		request.ClearHelpFields()
 
 	// Convert developer role to system role for compatibility
 	for i := range request.Messages {
@@ -33,9 +39,10 @@ func (o *ChatOutbound) TransformRequest(ctx context.Context, request *model.Inte
 		}
 	}
 
-	body, err := json.Marshal(request)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		body, err = json.Marshal(request)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal request: %w", err)
+		}
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "", bytes.NewReader(body))

@@ -71,6 +71,7 @@ func (i *ResponseInbound) TransformRequest(ctx context.Context, body []byte) (*m
 	if err != nil {
 		return nil, err
 	}
+	internalReq.RawRequest = body
 
 	// If the client requested reasoning summary via Responses API parameters, emit
 	// reasoning summary stream events instead of reasoning text to avoid duplicating

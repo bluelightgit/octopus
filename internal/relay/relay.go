@@ -20,7 +20,6 @@ import (
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
 	"github.com/bestruirui/octopus/internal/utils/log"
 	"github.com/gin-gonic/gin"
-	"github.com/samber/lo"
 	"github.com/tmaxmax/go-sse"
 )
 
@@ -31,9 +30,9 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	if err != nil {
 		return
 	}
-	if internalRequest.RawAPIFormat == model.APIFormatOpenAIResponse {
-		internalRequest.Stream = lo.ToPtr(true)
-	}
+	// NOTE: Do not force stream mode for Responses requests.
+	// Some clients use non-stream Responses calls and expect a single JSON response.
+	// We preserve the client-provided `stream` field.
 	supportedModels := c.GetString("supported_models")
 	if supportedModels != "" {
 		supportedModelsArray := strings.Split(supportedModels, ",")
