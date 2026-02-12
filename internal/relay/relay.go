@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -466,14 +467,60 @@ func (ra *relayAttempt) tapStreamForMetrics(ctx context.Context, data string) {
 		log.Warnf("failed to tap outbound stream for metrics: %v", err)
 		return
 	}
-	if internalStream == nil {
+	if internalStream != nil {
+		// Feed the internal chunk into inbound adapter so GetInternalResponse() can
+		// later aggregate a complete response for metrics/logging.
+		if _, err := ra.inAdapter.TransformStream(ctx, internalStream); err != nil {
+			log.Warnf("failed to tap inbound stream for metrics: %v", err)
+		}
+
+		// Ensure usage is recorded even if aggregation fails later.
+		if internalStream.Usage != nil && (ra.metrics == nil || ra.metrics.InternalResponse == nil || ra.metrics.InternalResponse.Usage == nil) {
+			if ra.metrics != nil {
+				ra.metrics.SetInternalResponse(&model.InternalLLMResponse{Usage: internalStream.Usage}, ra.internalRequest.Model)
+			}
+		}
 		return
 	}
-	// Feed the internal chunk into inbound adapter so GetInternalResponse() can
-	// later aggregate a complete response for metrics/logging.
-	if _, err := ra.inAdapter.TransformStream(ctx, internalStream); err != nil {
-		log.Warnf("failed to tap inbound stream for metrics: %v", err)
+
+	// Fallback: try to parse usage directly from Responses stream events.
+	if ra.metrics == nil {
+		return
 	}
+	if ra.metrics.InternalResponse != nil && ra.metrics.InternalResponse.Usage != nil {
+		return
+	}
+	// Avoid JSON parsing on non-usage events.
+	if !strings.Contains(data, `"usage"`) {
+		return
+	}
+
+	var raw struct {
+		Response struct {
+			Usage *struct {
+				InputTokens        int64 `json:"input_tokens"`
+				OutputTokens       int64 `json:"output_tokens"`
+				TotalTokens        int64 `json:"total_tokens"`
+				InputTokensDetails struct {
+					CachedTokens int64 `json:"cached_tokens"`
+				} `json:"input_tokens_details"`
+				OutputTokensDetails struct {
+					ReasoningTokens int64 `json:"reasoning_tokens"`
+				} `json:"output_tokens_details"`
+			} `json:"usage"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal([]byte(data), &raw); err != nil || raw.Response.Usage == nil {
+		return
+	}
+	usage := &model.Usage{
+		PromptTokens:     raw.Response.Usage.InputTokens,
+		CompletionTokens: raw.Response.Usage.OutputTokens,
+		TotalTokens:      raw.Response.Usage.TotalTokens,
+	}
+	usage.PromptTokensDetails = &model.PromptTokensDetails{CachedTokens: raw.Response.Usage.InputTokensDetails.CachedTokens}
+	usage.CompletionTokensDetails = &model.CompletionTokensDetails{ReasoningTokens: raw.Response.Usage.OutputTokensDetails.ReasoningTokens}
+	ra.metrics.SetInternalResponse(&model.InternalLLMResponse{Usage: usage}, ra.internalRequest.Model)
 }
 
 func formatSSEDataString(data string) []byte {
