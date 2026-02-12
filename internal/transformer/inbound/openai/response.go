@@ -21,6 +21,7 @@ type ResponseInbound struct {
 	hasContentPartStarted   bool
 	hasFinished             bool
 	responseCompleted       bool
+	emitReasoningSummary    bool
 
 	// Response metadata
 	responseID string
@@ -69,6 +70,13 @@ func (i *ResponseInbound) TransformRequest(ctx context.Context, body []byte) (*m
 	internalReq, err := convertToInternalRequest(&req)
 	if err != nil {
 		return nil, err
+	}
+
+	// If the client requested reasoning summary via Responses API parameters, emit
+	// reasoning summary stream events instead of reasoning text to avoid duplicating
+	// the same content across both event families.
+	if req.Reasoning != nil && req.Reasoning.Summary != nil {
+		i.emitReasoningSummary = true
 	}
 
 	// Preserve raw `tools` / `tool_choice` so we don't lose fields from newer
@@ -315,36 +323,39 @@ func (i *ResponseInbound) handleReasoningContent(content *string) [][]byte {
 			Item:        item,
 		}))
 
-		// Emit reasoning_summary_part.added
-		events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
-			Type:         "response.reasoning_summary_part.added",
-			ItemID:       &i.currentItemID,
-			OutputIndex:  lo.ToPtr(i.outputIndex),
-			SummaryIndex: lo.ToPtr(0),
-			Part:         &ResponsesContentPart{Type: "summary_text"},
-		}))
+		if i.emitReasoningSummary {
+			// Emit reasoning_summary_part.added (part.text is required by the official schema).
+			events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
+				Type:         "response.reasoning_summary_part.added",
+				ItemID:       &i.currentItemID,
+				OutputIndex:  lo.ToPtr(i.outputIndex),
+				SummaryIndex: lo.ToPtr(0),
+				Part:         &ResponsesContentPart{Type: "summary_text", Text: lo.ToPtr("")},
+			}))
+		}
 	}
 
 	// Accumulate reasoning content
 	i.accumulatedReasoning.WriteString(*content)
 
-	// Emit reasoning_summary_text.delta
-	events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
-		Type:         "response.reasoning_summary_text.delta",
-		ItemID:       &i.currentItemID,
-		OutputIndex:  lo.ToPtr(i.outputIndex),
-		SummaryIndex: lo.ToPtr(0),
-		Delta:        *content,
-	}))
-
-	// Emit reasoning_text.delta for clients expecting reasoning_text events.
-	events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
-		Type:         "response.reasoning_text.delta",
-		ItemID:       &i.currentItemID,
-		OutputIndex:  lo.ToPtr(i.outputIndex),
-		ContentIndex: &i.contentIndex,
-		Delta:        *content,
-	}))
+	if i.emitReasoningSummary {
+		// Emit reasoning_summary_text.delta
+		events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
+			Type:         "response.reasoning_summary_text.delta",
+			ItemID:       &i.currentItemID,
+			OutputIndex:  lo.ToPtr(i.outputIndex),
+			SummaryIndex: lo.ToPtr(0),
+			Delta:        *content,
+		}))
+	} else {
+		events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
+			Type:         "response.reasoning_text.delta",
+			ItemID:       &i.currentItemID,
+			OutputIndex:  lo.ToPtr(i.outputIndex),
+			ContentIndex: &i.contentIndex,
+			Delta:        *content,
+		}))
+	}
 
 	return events
 }
@@ -494,41 +505,46 @@ func (i *ResponseInbound) closeReasoningItem() [][]byte {
 	i.hasReasoningItemStarted = false
 	fullReasoning := i.accumulatedReasoning.String()
 
-	// Emit reasoning_summary_text.done
-	events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
-		Type:         "response.reasoning_summary_text.done",
-		ItemID:       &i.currentItemID,
-		OutputIndex:  lo.ToPtr(i.outputIndex),
-		SummaryIndex: lo.ToPtr(0),
-		Text:         fullReasoning,
-	}))
+	if i.emitReasoningSummary {
+		// Emit reasoning_summary_text.done
+		events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
+			Type:         "response.reasoning_summary_text.done",
+			ItemID:       &i.currentItemID,
+			OutputIndex:  lo.ToPtr(i.outputIndex),
+			SummaryIndex: lo.ToPtr(0),
+			Text:         fullReasoning,
+		}))
 
-	// Emit reasoning_summary_part.done
-	events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
-		Type:         "response.reasoning_summary_part.done",
-		ItemID:       &i.currentItemID,
-		OutputIndex:  lo.ToPtr(i.outputIndex),
-		SummaryIndex: lo.ToPtr(0),
-		Part:         &ResponsesContentPart{Type: "summary_text", Text: &fullReasoning},
-	}))
-
-	// Emit reasoning_text.done for clients expecting reasoning_text events.
-	events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
-		Type:         "response.reasoning_text.done",
-		ItemID:       &i.currentItemID,
-		OutputIndex:  lo.ToPtr(i.outputIndex),
-		ContentIndex: &i.contentIndex,
-		Text:         fullReasoning,
-	}))
+		// Emit reasoning_summary_part.done
+		events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
+			Type:         "response.reasoning_summary_part.done",
+			ItemID:       &i.currentItemID,
+			OutputIndex:  lo.ToPtr(i.outputIndex),
+			SummaryIndex: lo.ToPtr(0),
+			Part:         &ResponsesContentPart{Type: "summary_text", Text: &fullReasoning},
+		}))
+	} else {
+		events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
+			Type:         "response.reasoning_text.done",
+			ItemID:       &i.currentItemID,
+			OutputIndex:  lo.ToPtr(i.outputIndex),
+			ContentIndex: &i.contentIndex,
+			Text:         fullReasoning,
+		}))
+	}
 
 	// Emit output_item.done
+	itemSummary := []ResponsesReasoningSummary{{
+		Type: "summary_text",
+		Text: fullReasoning,
+	}}
+	if !i.emitReasoningSummary {
+		itemSummary = []ResponsesReasoningSummary{}
+	}
 	item := ResponsesItem{
-		ID:   i.currentItemID,
-		Type: "reasoning",
-		Summary: []ResponsesReasoningSummary{{
-			Type: "summary_text",
-			Text: fullReasoning,
-		}},
+		ID:      i.currentItemID,
+		Type:    "reasoning",
+		Summary: itemSummary,
 	}
 
 	events = append(events, i.enqueueEvent(&ResponsesStreamEvent{
@@ -669,6 +685,7 @@ func (i *ResponseInbound) closeCurrentOutputItem() [][]byte {
 				Type:        "response.function_call_arguments.done",
 				ItemID:      &itemID,
 				OutputIndex: &toolCallOutputIdx,
+				Name:        tc.Function.Name,
 				Arguments:   tc.Function.Arguments,
 			}))
 
