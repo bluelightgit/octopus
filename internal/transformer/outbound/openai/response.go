@@ -40,17 +40,28 @@ func (o *ResponseOutbound) TransformRequest(ctx context.Context, request *model.
 		return nil, fmt.Errorf("request is nil")
 	}
 
-	// Convert to Responses API request format
-	responsesReq := ConvertToResponsesRequest(request)
+	var body []byte
+	var err error
 
-	body, err := json.Marshal(responsesReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal responses api request: %w", err)
-	}
+	// Same-protocol passthrough: preserve raw Responses request fields.
+	if request.RawAPIFormat == model.APIFormatOpenAIResponse && len(request.RawRequest) > 0 {
+		body, err = rewriteResponsesRequestBody(request.RawRequest, request.Model, request.Stream)
+		if err != nil {
+			return nil, fmt.Errorf("failed to rewrite responses request body: %w", err)
+		}
+	} else {
+		// Convert to Responses API request format
+		responsesReq := ConvertToResponsesRequest(request)
 
-	body, err = mergeExtraBodyIntoJSON(body, request.ExtraBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to merge responses extra body: %w", err)
+		body, err = json.Marshal(responsesReq)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal responses api request: %w", err)
+		}
+
+		body, err = mergeExtraBodyIntoJSON(body, request.ExtraBody)
+		if err != nil {
+			return nil, fmt.Errorf("failed to merge responses extra body: %w", err)
+		}
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "", bytes.NewReader(body))
@@ -61,6 +72,9 @@ func (o *ResponseOutbound) TransformRequest(ctx context.Context, request *model.
 	// Set headers
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	if request.Stream != nil && *request.Stream {
+		req.Header.Set("Accept", "text/event-stream")
+	}
 	req.Header.Set("Authorization", "Bearer "+key)
 
 	// Parse and set URL
@@ -94,6 +108,20 @@ func mergeExtraBodyIntoJSON(body []byte, extra json.RawMessage) ([]byte, error) 
 		baseObj[k] = v
 	}
 	return json.Marshal(baseObj)
+}
+
+func rewriteResponsesRequestBody(raw []byte, modelName string, stream *bool) ([]byte, error) {
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil, err
+	}
+	if modelName != "" {
+		obj["model"] = modelName
+	}
+	if stream != nil {
+		obj["stream"] = *stream
+	}
+	return json.Marshal(obj)
 }
 
 func (o *ResponseOutbound) TransformResponse(ctx context.Context, response *http.Response) (*model.InternalLLMResponse, error) {
