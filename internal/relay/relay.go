@@ -350,8 +350,9 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 	firstToken := true
 
 	type sseReadResult struct {
-		data string
-		err  error
+		eventType string
+		data      string
+		err       error
 	}
 	results := make(chan sseReadResult, 1)
 	go func() {
@@ -362,7 +363,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				results <- sseReadResult{err: err}
 				return
 			}
-			results <- sseReadResult{data: ev.Data}
+			results <- sseReadResult{eventType: ev.Type, data: ev.Data}
 		}
 	}()
 
@@ -407,7 +408,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 					continue
 				}
 				ra.tapStreamForMetrics(ctx, r.data)
-				data = formatSSEDataString(r.data)
+				data = formatSSEEventString(r.eventType, r.data)
 
 				// Stop early once the upstream signals completion.
 				if strings.TrimSpace(r.data) == "[DONE]" {
@@ -545,6 +546,17 @@ func formatSSEDataString(data string) []byte {
 		sb.WriteString("\n")
 	}
 	sb.WriteString("\n")
+	return []byte(sb.String())
+}
+
+func formatSSEEventString(eventType string, data string) []byte {
+	var sb strings.Builder
+	if strings.TrimSpace(eventType) != "" {
+		sb.WriteString("event: ")
+		sb.WriteString(eventType)
+		sb.WriteString("\n")
+	}
+	sb.Write(formatSSEDataString(data))
 	return []byte(sb.String())
 }
 
