@@ -20,24 +20,27 @@ func (o *ChatOutbound) TransformRequest(ctx context.Context, request *model.Inte
 	var body []byte
 	var err error
 	if request != nil && request.RawAPIFormat == model.APIFormatOpenAIChatCompletion && len(request.RawRequest) > 0 {
-		body = request.RawRequest
+		body, err = rewriteChatCompletionsRequestBody(request.RawRequest, request.Model, request.Stream)
+		if err != nil {
+			return nil, fmt.Errorf("failed to rewrite chat completions request body: %w", err)
+		}
 	} else {
 		request.ClearHelpFields()
 
-	// Convert developer role to system role for compatibility
-	for i := range request.Messages {
-		if request.Messages[i].Role == "developer" {
-			request.Messages[i].Role = "system"
+		// Convert developer role to system role for compatibility
+		for i := range request.Messages {
+			if request.Messages[i].Role == "developer" {
+				request.Messages[i].Role = "system"
+			}
 		}
-	}
 
-	if request.Stream != nil && *request.Stream {
-		if request.StreamOptions == nil {
-			request.StreamOptions = &model.StreamOptions{IncludeUsage: true}
-		} else if !request.StreamOptions.IncludeUsage {
-			request.StreamOptions.IncludeUsage = true
+		if request.Stream != nil && *request.Stream {
+			if request.StreamOptions == nil {
+				request.StreamOptions = &model.StreamOptions{IncludeUsage: true}
+			} else if !request.StreamOptions.IncludeUsage {
+				request.StreamOptions.IncludeUsage = true
+			}
 		}
-	}
 
 		body, err = json.Marshal(request)
 		if err != nil {
@@ -62,6 +65,46 @@ func (o *ChatOutbound) TransformRequest(ctx context.Context, request *model.Inte
 	req.URL = parsedUrl
 	req.Method = http.MethodPost
 	return req, nil
+}
+
+func rewriteChatCompletionsRequestBody(raw []byte, modelName string, stream *bool) ([]byte, error) {
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil, err
+	}
+
+	if modelName != "" {
+		obj["model"] = modelName
+	}
+	if stream != nil {
+		obj["stream"] = *stream
+	}
+
+	// Preserve historical behavior: convert developer role to system role.
+	if messages, ok := obj["messages"].([]any); ok {
+		for i := range messages {
+			msg, ok := messages[i].(map[string]any)
+			if !ok || msg == nil {
+				continue
+			}
+			if role, ok := msg["role"].(string); ok && role == "developer" {
+				msg["role"] = "system"
+			}
+		}
+	}
+
+	// Preserve historical behavior: request usage in streaming mode so the relay
+	// can compute costs from upstream usage fields.
+	if stream != nil && *stream {
+		so, ok := obj["stream_options"].(map[string]any)
+		if !ok || so == nil {
+			so = map[string]any{}
+		}
+		so["include_usage"] = true
+		obj["stream_options"] = so
+	}
+
+	return json.Marshal(obj)
 }
 
 func (o *ChatOutbound) TransformResponse(ctx context.Context, response *http.Response) (*model.InternalLLMResponse, error) {
