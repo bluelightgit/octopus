@@ -477,6 +477,8 @@ func (ra *relayAttempt) shouldPassthroughSSE() bool {
 	// We only passthrough streaming responses when the upstream response stream
 	// is already in the client protocol format.
 	switch ra.internalRequest.RawAPIFormat {
+	case model.APIFormatOpenAIChatCompletion:
+		return ra.channel.Type == outbound.OutboundTypeOpenAIChat
 	case model.APIFormatOpenAIResponse:
 		return ra.channel.Type == outbound.OutboundTypeOpenAIResponse
 	case model.APIFormatAnthropicMessage:
@@ -687,6 +689,8 @@ func (ra *relayAttempt) shouldPassthroughNonStream() bool {
 	}
 
 	switch ra.internalRequest.RawAPIFormat {
+	case model.APIFormatOpenAIChatCompletion:
+		return ra.channel.Type == outbound.OutboundTypeOpenAIChat
 	case model.APIFormatOpenAIResponse:
 		return ra.channel.Type == outbound.OutboundTypeOpenAIResponse
 	case model.APIFormatAnthropicMessage:
