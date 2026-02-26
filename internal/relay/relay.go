@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -158,19 +159,21 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 
 	// 所有通道都失败
 	metrics.Save(c.Request.Context(), false, lastErr, iter.Attempts())
-	if lastErr != nil {
-		if ue, ok := lastErr.(upstreamHTTPError); ok {
-			ct := strings.TrimSpace(ue.ContentType)
-			if ct == "" {
-				ct = "application/json"
-			}
-			code := ue.StatusCode
-			if code <= 0 {
-				code = http.StatusBadGateway
-			}
-			c.Data(code, ct, ue.Body)
-			return
+	var ue upstreamHTTPError
+	if lastErr != nil && errors.As(lastErr, &ue) {
+		if metrics != nil {
+			metrics.SetClientResponseBody(ue.Body)
 		}
+		ct := strings.TrimSpace(ue.ContentType)
+		if ct == "" {
+			ct = "application/json"
+		}
+		code := ue.StatusCode
+		if code <= 0 {
+			code = http.StatusBadGateway
+		}
+		c.Data(code, ct, ue.Body)
+		return
 	}
 	resp.Error(c, http.StatusBadGateway, "all channels failed")
 }
@@ -228,7 +231,7 @@ func (ra *relayAttempt) attempt() attemptResult {
 	return attemptResult{
 		Success: false,
 		Written: written,
-		Err:     fmt.Errorf("channel %s failed: %v", ra.channel.Name, fwdErr),
+		Err:     fmt.Errorf("channel %s failed: %w", ra.channel.Name, fwdErr),
 	}
 }
 
@@ -461,6 +464,9 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				}
 			}
 
+			if ra.metrics != nil {
+				ra.metrics.AppendClientResponseChunk(data)
+			}
 			ra.c.Writer.Write(data)
 			ra.c.Writer.Flush()
 		}
@@ -660,6 +666,9 @@ func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Respo
 		if contentType == "" {
 			contentType = "application/json"
 		}
+		if ra.metrics != nil {
+			ra.metrics.SetClientResponseBody(bodyBytes)
+		}
 		ra.c.Data(http.StatusOK, contentType, bodyBytes)
 		return nil
 	}
@@ -676,6 +685,9 @@ func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Respo
 		return fmt.Errorf("failed to transform inbound response: %w", err)
 	}
 
+	if ra.metrics != nil {
+		ra.metrics.SetClientResponseBody(inResponse)
+	}
 	ra.c.Data(http.StatusOK, "application/json", inResponse)
 	return nil
 }
