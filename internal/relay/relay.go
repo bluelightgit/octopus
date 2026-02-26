@@ -424,7 +424,12 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 					continue
 				}
 				ra.tapStreamForMetrics(ctx, r.data)
-				data = formatSSEDataString(r.data)
+				switch ra.internalRequest.RawAPIFormat {
+				case model.APIFormatAnthropicMessage:
+					data = formatSSEEventString(r.eventType, r.data)
+				default:
+					data = formatSSEDataString(r.data)
+				}
 
 				// Stop early once the upstream signals completion.
 				if strings.TrimSpace(r.data) == "[DONE]" {
@@ -469,14 +474,13 @@ func (ra *relayAttempt) shouldPassthroughSSE() bool {
 	if ra.internalRequest.Stream == nil || !*ra.internalRequest.Stream {
 		return false
 	}
-	if ra.channel == nil || ra.channel.Type != outbound.OutboundTypeOpenAIResponse {
-		return false
-	}
-	// OpenAI Responses REST streaming uses data-only SSE frames.
-
+	// We only passthrough streaming responses when the upstream response stream
+	// is already in the client protocol format.
 	switch ra.internalRequest.RawAPIFormat {
 	case model.APIFormatOpenAIResponse:
-		return true
+		return ra.channel.Type == outbound.OutboundTypeOpenAIResponse
+	case model.APIFormatAnthropicMessage:
+		return ra.channel.Type == outbound.OutboundTypeAnthropic
 	default:
 		return false
 	}
@@ -564,6 +568,17 @@ func formatSSEDataString(data string) []byte {
 		sb.WriteString("\n")
 	}
 	sb.WriteString("\n")
+	return []byte(sb.String())
+}
+
+func formatSSEEventString(eventType string, data string) []byte {
+	var sb strings.Builder
+	if strings.TrimSpace(eventType) != "" {
+		sb.WriteString("event: ")
+		sb.WriteString(eventType)
+		sb.WriteString("\n")
+	}
+	sb.Write(formatSSEDataString(data))
 	return []byte(sb.String())
 }
 
@@ -674,6 +689,8 @@ func (ra *relayAttempt) shouldPassthroughNonStream() bool {
 	switch ra.internalRequest.RawAPIFormat {
 	case model.APIFormatOpenAIResponse:
 		return ra.channel.Type == outbound.OutboundTypeOpenAIResponse
+	case model.APIFormatAnthropicMessage:
+		return ra.channel.Type == outbound.OutboundTypeAnthropic
 	default:
 		return false
 	}
