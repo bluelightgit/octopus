@@ -399,7 +399,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 					continue
 				}
 				ra.tapStreamForMetrics(ctx, r.data)
-				data = formatSSEEventString(r.eventType, r.data)
+				data = formatSSEDataString(r.data)
 
 				// Stop early once the upstream signals completion.
 				if strings.TrimSpace(r.data) == "[DONE]" {
@@ -447,8 +447,7 @@ func (ra *relayAttempt) shouldPassthroughSSE() bool {
 	if ra.channel == nil || ra.channel.Type != outbound.OutboundTypeOpenAIResponse {
 		return false
 	}
-	// OpenAI REST streaming uses SSE with `data:` frames.
-	// We only passthrough when the upstream also uses SSE (Responses API).
+	// OpenAI Responses REST streaming uses data-only SSE frames.
 
 	switch ra.internalRequest.RawAPIFormat {
 	case model.APIFormatOpenAIResponse:
@@ -540,17 +539,6 @@ func formatSSEDataString(data string) []byte {
 		sb.WriteString("\n")
 	}
 	sb.WriteString("\n")
-	return []byte(sb.String())
-}
-
-func formatSSEEventString(eventType string, data string) []byte {
-	var sb strings.Builder
-	if strings.TrimSpace(eventType) != "" {
-		sb.WriteString("event: ")
-		sb.WriteString(eventType)
-		sb.WriteString("\n")
-	}
-	sb.Write(formatSSEDataString(data))
 	return []byte(sb.String())
 }
 

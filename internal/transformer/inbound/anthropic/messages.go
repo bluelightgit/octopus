@@ -50,6 +50,7 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 		RawAPIFormat:        model.APIFormatAnthropicMessage,
 		TransformerMetadata: map[string]string{},
 	}
+	chatReq.RawRequest = body
 	if anthropicReq.Metadata != nil {
 		chatReq.Metadata["user_id"] = anthropicReq.Metadata.UserID
 	}
