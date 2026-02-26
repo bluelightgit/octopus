@@ -251,7 +251,7 @@ func (i *ResponseInbound) enqueueEvent(ev *ResponsesStreamEvent) []byte {
 		return nil
 	}
 
-	return formatSSEEvent(ev.Type, data)
+	return formatSSEData(data)
 }
 
 func (i *ResponseInbound) setTerminalStatus(finishReason string) {
@@ -830,17 +830,12 @@ func (i *ResponseInbound) GetInternalResponse(ctx context.Context) (*model.Inter
 	return result, nil
 }
 
-// formatSSEData formats data as SSE data line
+// formatSSEData formats data as SSE data line.
+//
+// OpenAI REST streaming uses data-only SSE (no `event:` line). The event type is
+// carried by the JSON payload's `type` field.
 func formatSSEData(data []byte) []byte {
 	return []byte(fmt.Sprintf("data: %s\n\n", string(data)))
-}
-
-func formatSSEEvent(eventType string, data []byte) []byte {
-	dataLine := formatSSEData(data)
-	if strings.TrimSpace(eventType) == "" {
-		return dataLine
-	}
-	return append([]byte(fmt.Sprintf("event: %s\n", eventType)), dataLine...)
 }
 
 // Request types

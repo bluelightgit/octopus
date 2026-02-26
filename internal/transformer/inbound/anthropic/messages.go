@@ -990,5 +990,5 @@ func mergeToolCall(toolCalls []model.ToolCall, delta model.ToolCall) []model.Too
 
 // formatSSEEvent 格式化为完整的 SSE 事件格式
 func formatSSEEvent(eventType string, data []byte) []byte {
-	return []byte(fmt.Sprintf("event:%s\ndata:%s\n\n", eventType, string(data)))
+	return []byte(fmt.Sprintf("event: %s\ndata: %s\n\n", eventType, string(data)))
 }
