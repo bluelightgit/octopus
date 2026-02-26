@@ -21,6 +21,24 @@ func (i *ChatInbound) TransformRequest(ctx context.Context, body []byte) (*model
 	}
 	request.RawRequest = body
 	request.RawAPIFormat = model.APIFormatOpenAIChatCompletion
+
+	// Preserve raw `tools` / `tool_choice` so we don't lose fields from newer
+	// official OpenAI schemas (e.g. MCP / hosted tools / allowed_tools).
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err == nil {
+		extra := make(map[string]json.RawMessage)
+		if v, ok := raw["tools"]; ok {
+			extra["tools"] = v
+		}
+		if v, ok := raw["tool_choice"]; ok {
+			extra["tool_choice"] = v
+		}
+		if len(extra) > 0 {
+			if b, err := json.Marshal(extra); err == nil {
+				request.ExtraBody = b
+			}
+		}
+	}
 	return &request, nil
 }
 
