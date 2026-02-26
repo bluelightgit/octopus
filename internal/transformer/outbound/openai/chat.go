@@ -16,6 +16,9 @@ import (
 type ChatOutbound struct{}
 
 func (o *ChatOutbound) TransformRequest(ctx context.Context, request *model.InternalLLMRequest, baseUrl, key string) (*http.Request, error) {
+	if request == nil {
+		return nil, fmt.Errorf("request is nil")
+	}
 	// Same-protocol passthrough: preserve raw Chat Completions request fields.
 	var body []byte
 	var err error
@@ -25,26 +28,43 @@ func (o *ChatOutbound) TransformRequest(ctx context.Context, request *model.Inte
 			return nil, fmt.Errorf("failed to rewrite chat completions request body: %w", err)
 		}
 	} else {
-		request.ClearHelpFields()
+		// Avoid mutating the shared request (used for retries/metrics).
+		copyReq := *request
+		copyReq.Messages = append([]model.Message(nil), request.Messages...)
+		if request.StreamOptions != nil {
+			so := *request.StreamOptions
+			copyReq.StreamOptions = &so
+		}
+		copyReq.ClearHelpFields()
 
 		// Convert developer role to system role for compatibility
-		for i := range request.Messages {
-			if request.Messages[i].Role == "developer" {
-				request.Messages[i].Role = "system"
+		for i := range copyReq.Messages {
+			if copyReq.Messages[i].Role == "developer" {
+				copyReq.Messages[i].Role = "system"
 			}
 		}
 
-		if request.Stream != nil && *request.Stream {
-			if request.StreamOptions == nil {
-				request.StreamOptions = &model.StreamOptions{IncludeUsage: true}
-			} else if !request.StreamOptions.IncludeUsage {
-				request.StreamOptions.IncludeUsage = true
+		if copyReq.Stream != nil && *copyReq.Stream {
+			if copyReq.StreamOptions == nil {
+				copyReq.StreamOptions = &model.StreamOptions{IncludeUsage: true}
+			} else if !copyReq.StreamOptions.IncludeUsage {
+				copyReq.StreamOptions.IncludeUsage = true
 			}
 		}
 
-		body, err = json.Marshal(request)
+		body, err = json.Marshal(&copyReq)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal request: %w", err)
+		}
+
+		// Preserve raw tool metadata from newer schemas when converting from
+		// Responses API into Chat Completions.
+		if request.RawAPIFormat == model.APIFormatOpenAIResponse {
+			if merged, mergeErr := mergeExtraBodyIntoJSON(body, request.ExtraBody); mergeErr == nil {
+				body = merged
+			} else {
+				return nil, fmt.Errorf("failed to merge extra body: %w", mergeErr)
+			}
 		}
 	}
 
