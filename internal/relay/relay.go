@@ -158,6 +158,20 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 
 	// 所有通道都失败
 	metrics.Save(c.Request.Context(), false, lastErr, iter.Attempts())
+	if lastErr != nil {
+		if ue, ok := lastErr.(upstreamHTTPError); ok {
+			ct := strings.TrimSpace(ue.ContentType)
+			if ct == "" {
+				ct = "application/json"
+			}
+			code := ue.StatusCode
+			if code <= 0 {
+				code = http.StatusBadGateway
+			}
+			c.Data(code, ct, ue.Body)
+			return
+		}
+	}
 	resp.Error(c, http.StatusBadGateway, "all channels failed")
 }
 
@@ -322,6 +336,17 @@ func (ra *relayAttempt) sendRequest(req *http.Request) (*http.Response, error) {
 
 // handleStreamResponse 处理流式响应
 func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http.Response) error {
+	if response == nil {
+		return fmt.Errorf("response is nil")
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 256*1024))
+		return upstreamHTTPError{
+			StatusCode:  response.StatusCode,
+			ContentType: response.Header.Get("Content-Type"),
+			Body:        body,
+		}
+	}
 	if ct := response.Header.Get("Content-Type"); ct != "" && !strings.Contains(strings.ToLower(ct), "text/event-stream") {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 16*1024))
 		return fmt.Errorf("upstream returned non-SSE content-type %q for stream request: %s", ct, string(body))
@@ -564,6 +589,34 @@ func (ra *relayAttempt) transformStreamData(ctx context.Context, data string) ([
 
 // handleResponse 处理非流式响应
 func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Response) error {
+	if response == nil {
+		return fmt.Errorf("response is nil")
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		bodyBytes, err := io.ReadAll(response.Body)
+		if err != nil {
+			log.Warnf("failed to read error response body: %v", err)
+			return fmt.Errorf("failed to read response body: %w", err)
+		}
+
+		// Best-effort: still populate internal response for metrics/logging.
+		if ra.outAdapter != nil && ra.inAdapter != nil {
+			clone := *response
+			clone.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			if internalResponse, err := ra.outAdapter.TransformResponse(ctx, &clone); err != nil {
+				log.Warnf("failed to tap error response for metrics: %v", err)
+			} else if internalResponse != nil {
+				_, _ = ra.inAdapter.TransformResponse(ctx, internalResponse)
+			}
+		}
+
+		return upstreamHTTPError{
+			StatusCode:  response.StatusCode,
+			ContentType: response.Header.Get("Content-Type"),
+			Body:        bodyBytes,
+		}
+	}
+
 	if ra.shouldPassthroughNonStream() {
 		bodyBytes, err := io.ReadAll(response.Body)
 		if err != nil {
