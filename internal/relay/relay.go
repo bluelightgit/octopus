@@ -270,24 +270,15 @@ func (ra *relayAttempt) forward() (int, error) {
 	}
 	defer response.Body.Close()
 
-	// 检查响应状态
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		body, err := io.ReadAll(response.Body)
-		if err != nil {
-			return 0, fmt.Errorf("failed to read response body: %w", err)
-		}
-		return 0, fmt.Errorf("upstream error: %d: %s", response.StatusCode, string(body))
-	}
-
-	// 处理响应
+	// 处理响应（包含非 2xx 错误透传/转换）
 	if ra.internalRequest.Stream != nil && *ra.internalRequest.Stream {
 		if err := ra.handleStreamResponse(ctx, response); err != nil {
-			return 0, err
+			return response.StatusCode, err
 		}
 		return response.StatusCode, nil
 	}
 	if err := ra.handleResponse(ctx, response); err != nil {
-		return 0, err
+		return response.StatusCode, err
 	}
 	return response.StatusCode, nil
 }
@@ -453,12 +444,15 @@ func (ra *relayAttempt) shouldPassthroughSSE() bool {
 	if ra.internalRequest.Stream == nil || !*ra.internalRequest.Stream {
 		return false
 	}
+	if ra.channel == nil || ra.channel.Type != outbound.OutboundTypeOpenAIResponse {
+		return false
+	}
+	// OpenAI REST streaming uses SSE with `data:` frames.
+	// We only passthrough when the upstream also uses SSE (Responses API).
 
 	switch ra.internalRequest.RawAPIFormat {
-	case model.APIFormatOpenAIChatCompletion:
-		return ra.channel.Type == outbound.OutboundTypeOpenAIChat
 	case model.APIFormatOpenAIResponse:
-		return ra.channel.Type == outbound.OutboundTypeOpenAIResponse
+		return true
 	default:
 		return false
 	}
@@ -637,8 +631,6 @@ func (ra *relayAttempt) shouldPassthroughNonStream() bool {
 	}
 
 	switch ra.internalRequest.RawAPIFormat {
-	case model.APIFormatOpenAIChatCompletion:
-		return ra.channel.Type == outbound.OutboundTypeOpenAIChat
 	case model.APIFormatOpenAIResponse:
 		return ra.channel.Type == outbound.OutboundTypeOpenAIResponse
 	default:

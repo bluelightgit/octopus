@@ -14,6 +14,7 @@ type APIFormat string
 
 const (
 	APIFormatOpenAIChatCompletion  APIFormat = "openai/chat_completions"
+	APIFormatOpenAICompletions     APIFormat = "openai/completions"
 	APIFormatOpenAIResponse        APIFormat = "openai/responses"
 	APIFormatOpenAIImageGeneration APIFormat = "openai/image_generation"
 	APIFormatOpenAIEmbedding       APIFormat = "openai/embeddings"
