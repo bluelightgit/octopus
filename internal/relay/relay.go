@@ -54,6 +54,13 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		return
 	}
 
+	rawOnlyRequiredType, rawOnlyHasRequired := rawOnlyRequiredOutboundType(internalRequest)
+	rawOnlySawCompatible := false
+	if internalRequest.RawOnly && !rawOnlyHasRequired {
+		resp.Error(c, http.StatusBadRequest, "raw-only request format not supported")
+		return
+	}
+
 	// 创建迭代器（策略排序 + 粘性优先）
 	iter := balancer.NewIterator(group, apiKeyID, requestModel)
 	if iter.Len() == 0 {
@@ -99,6 +106,14 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		if !channel.Enabled {
 			iter.Skip(channel.ID, 0, channel.Name, "channel disabled")
 			continue
+		}
+
+		if internalRequest.RawOnly {
+			if channel.Type != rawOnlyRequiredType {
+				iter.Skip(channel.ID, 0, channel.Name, fmt.Sprintf("raw-only request requires channel type %d", rawOnlyRequiredType))
+				continue
+			}
+			rawOnlySawCompatible = true
 		}
 
 		usedKey := channel.GetChannelKey()
@@ -159,6 +174,13 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 
 	// 所有通道都失败
 	var ue upstreamHTTPError
+	if internalRequest.RawOnly && rawOnlyHasRequired && !rawOnlySawCompatible {
+		err := errors.New("no same-protocol channel for raw-only request")
+		metrics.Save(c.Request.Context(), false, err, iter.Attempts())
+		resp.Error(c, http.StatusBadRequest, "no same-protocol channel for raw-only request")
+		return
+	}
+
 	if lastErr != nil && errors.As(lastErr, &ue) {
 		if metrics != nil {
 			metrics.SetClientResponseBody(ue.Body)
@@ -739,4 +761,20 @@ func (ra *relayAttempt) collectResponse() {
 	}
 
 	ra.metrics.SetInternalResponse(internalResponse, ra.internalRequest.Model)
+}
+
+func rawOnlyRequiredOutboundType(req *model.InternalLLMRequest) (outbound.OutboundType, bool) {
+	if req == nil || !req.RawOnly {
+		return 0, false
+	}
+	switch req.RawAPIFormat {
+	case model.APIFormatOpenAIChatCompletion:
+		return outbound.OutboundTypeOpenAIChat, true
+	case model.APIFormatOpenAIResponse:
+		return outbound.OutboundTypeOpenAIResponse, true
+	case model.APIFormatAnthropicMessage:
+		return outbound.OutboundTypeAnthropic, true
+	default:
+		return 0, false
+	}
 }

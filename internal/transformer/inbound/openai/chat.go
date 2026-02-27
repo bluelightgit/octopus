@@ -17,7 +17,50 @@ type ChatInbound struct {
 func (i *ChatInbound) TransformRequest(ctx context.Context, body []byte) (*model.InternalLLMRequest, error) {
 	var request model.InternalLLMRequest
 	if err := json.Unmarshal(body, &request); err != nil {
-		return nil, err
+		// Fallback: keep raw request to enable same-protocol passthrough.
+		var raw map[string]json.RawMessage
+		if jerr := json.Unmarshal(body, &raw); jerr != nil {
+			return nil, err
+		}
+
+		modelName := ""
+		if v, ok := raw["model"]; ok {
+			_ = json.Unmarshal(v, &modelName)
+		}
+		if modelName == "" {
+			return nil, err
+		}
+
+		stream := (*bool)(nil)
+		if v, ok := raw["stream"]; ok {
+			var b bool
+			if jerr := json.Unmarshal(v, &b); jerr == nil {
+				stream = &b
+			}
+		}
+
+		req := &model.InternalLLMRequest{
+			Model:        modelName,
+			Stream:       stream,
+			RawAPIFormat: model.APIFormatOpenAIChatCompletion,
+			RawRequest:   body,
+			RawOnly:      true,
+		}
+
+		// Preserve raw tools/tool_choice even in raw-only mode.
+		extra := make(map[string]json.RawMessage)
+		if v, ok := raw["tools"]; ok {
+			extra["tools"] = v
+		}
+		if v, ok := raw["tool_choice"]; ok {
+			extra["tool_choice"] = v
+		}
+		if len(extra) > 0 {
+			if b, jerr := json.Marshal(extra); jerr == nil {
+				req.ExtraBody = b
+			}
+		}
+		return req, nil
 	}
 	request.RawRequest = body
 	request.RawAPIFormat = model.APIFormatOpenAIChatCompletion
@@ -41,7 +84,6 @@ func (i *ChatInbound) TransformRequest(ctx context.Context, body []byte) (*model
 	}
 	return &request, nil
 }
-
 func (i *ChatInbound) TransformResponse(ctx context.Context, response *model.InternalLLMResponse) ([]byte, error) {
 	// Store the response for later retrieval
 	i.storedResponse = response

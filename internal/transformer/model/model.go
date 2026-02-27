@@ -221,6 +221,10 @@ type InternalLLMRequest struct {
 	ExtraBody json.RawMessage `json:"extra_body,omitempty"`
 
 	// RawRequest is the raw request from the client.
+	// RawOnly indicates the request body couldn't be fully parsed into internal schema.
+	// It is only safe to forward this request via same-protocol passthrough.
+	RawOnly bool `json:"-"`
+
 	RawRequest []byte `json:"-"`
 
 	// RawAPIFormat is the original format of the request.
@@ -248,6 +252,10 @@ type InternalLLMRequest struct {
 func (r *InternalLLMRequest) Validate() error {
 	if r.Model == "" {
 		return errors.New("model is required")
+	}
+
+	if r.RawOnly {
+		return nil
 	}
 
 	// 检查是否是 embedding 请求
