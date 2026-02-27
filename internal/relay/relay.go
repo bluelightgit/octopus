@@ -158,12 +158,12 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	}
 
 	// 所有通道都失败
-	metrics.Save(c.Request.Context(), false, lastErr, iter.Attempts())
 	var ue upstreamHTTPError
 	if lastErr != nil && errors.As(lastErr, &ue) {
 		if metrics != nil {
 			metrics.SetClientResponseBody(ue.Body)
 		}
+		metrics.Save(c.Request.Context(), false, lastErr, iter.Attempts())
 		ct := strings.TrimSpace(ue.ContentType)
 		if ct == "" {
 			ct = "application/json"
@@ -175,6 +175,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		c.Data(code, ct, ue.Body)
 		return
 	}
+	metrics.Save(c.Request.Context(), false, lastErr, iter.Attempts())
 	resp.Error(c, http.StatusBadGateway, "all channels failed")
 }
 
@@ -373,16 +374,27 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		data      string
 		err       error
 	}
-	results := make(chan sseReadResult, 1)
+
+	stop := make(chan struct{})
+	defer close(stop)
+
+	results := make(chan sseReadResult, 16)
 	go func() {
 		defer close(results)
 		readCfg := &sse.ReadConfig{MaxEventSize: maxSSEEventSize}
 		for ev, err := range sse.Read(response.Body, readCfg) {
 			if err != nil {
-				results <- sseReadResult{err: err}
+				select {
+				case results <- sseReadResult{err: err}:
+				case <-stop:
+				}
 				return
 			}
-			results <- sseReadResult{eventType: ev.Type, data: ev.Data}
+			select {
+			case results <- sseReadResult{eventType: ev.Type, data: ev.Data}:
+			case <-stop:
+				return
+			}
 		}
 	}()
 
@@ -402,6 +414,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		select {
 		case <-ctx.Done():
 			log.Infof("client disconnected, stopping stream")
+			_ = response.Body.Close()
 			return nil
 		case <-firstTokenC:
 			log.Warnf("first token timeout (%ds), switching channel", ra.firstTokenTimeOutSec)
@@ -414,6 +427,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			}
 			if r.err != nil {
 				log.Warnf("failed to read event: %v", r.err)
+				_ = response.Body.Close()
 				return fmt.Errorf("failed to read stream event: %w", r.err)
 			}
 
@@ -438,9 +452,14 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				if strings.TrimSpace(r.data) == "[DONE]" {
 					if firstToken {
 						ra.metrics.SetFirstTokenTime(time.Now())
+						firstToken = false
+					}
+					if ra.metrics != nil {
+						ra.metrics.AppendClientResponseChunk(data)
 					}
 					ra.c.Writer.Write(data)
 					ra.c.Writer.Flush()
+					_ = response.Body.Close()
 					return nil
 				}
 			} else {
@@ -449,6 +468,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 					continue
 				}
 			}
+
 			if firstToken {
 				ra.metrics.SetFirstTokenTime(time.Now())
 				firstToken = false
@@ -472,7 +492,6 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		}
 	}
 }
-
 func (ra *relayAttempt) shouldPassthroughSSE() bool {
 	if ra == nil || ra.internalRequest == nil || ra.channel == nil {
 		return false
