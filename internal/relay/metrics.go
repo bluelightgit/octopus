@@ -185,12 +185,12 @@ func (m *RelayMetrics) Save(ctx context.Context, success bool, err error, attemp
 		globalStats.RequestFailed = 1
 	}
 
+	channelID, channelName := finalChannel(attempts)
 	op.StatsTotalUpdate(globalStats)
 	op.StatsHourlyUpdate(globalStats)
 	op.StatsDailyUpdate(context.Background(), globalStats)
 	op.StatsAPIKeyUpdate(m.APIKeyID, globalStats)
-
-	channelID, channelName := finalChannel(attempts)
+	op.StatsChannelUpdate(channelID, globalStats)
 
 	log.Infof("relay complete: model=%s, channel=%d(%s), success=%t, duration=%dms, input_token=%d, output_token=%d, input_cost=%f, output_cost=%f, total_cost=%f, attempts=%d",
 		m.RequestModel, channelID, channelName, success, duration.Milliseconds(),

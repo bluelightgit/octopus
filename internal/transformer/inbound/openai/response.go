@@ -1207,8 +1207,10 @@ func convertToInternalRequest(req *ResponsesRequest) (*model.InternalLLMRequest,
 		Metadata:            req.Metadata,
 		MaxCompletionTokens: req.MaxOutputTokens,
 		TopLogprobs:         req.TopLogprobs,
+		ParallelToolCalls:   req.ParallelToolCalls,
 		RawAPIFormat:        model.APIFormatOpenAIResponse,
 		TransformerMetadata: map[string]string{},
+		Include:             append([]string(nil), req.Include...),
 	}
 	chatReq.Include = req.Include
 	if req.StreamOptions != nil && req.StreamOptions.IncludeObfuscation != nil {
