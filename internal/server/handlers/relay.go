@@ -19,6 +19,10 @@ func init() {
 				Handle(chat),
 		).
 		AddRoute(
+			router.NewRoute("/completions", http.MethodPost).
+				Handle(completions),
+		).
+		AddRoute(
 			router.NewRoute("/responses", http.MethodPost).
 				Handle(response),
 		).
@@ -34,6 +38,10 @@ func init() {
 
 func chat(c *gin.Context) {
 	relay.Handler(inbound.InboundTypeOpenAIChat, c)
+}
+
+func completions(c *gin.Context) {
+	relay.Handler(inbound.InboundTypeOpenAICompletions, c)
 }
 func response(c *gin.Context) {
 	relay.Handler(inbound.InboundTypeOpenAIResponse, c)

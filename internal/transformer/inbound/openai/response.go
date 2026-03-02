@@ -60,7 +60,49 @@ type ResponseInbound struct {
 func (i *ResponseInbound) TransformRequest(ctx context.Context, body []byte) (*model.InternalLLMRequest, error) {
 	var req ResponsesRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		return nil, fmt.Errorf("failed to decode responses api request: %w", err)
+		// Fallback: keep raw request to enable same-protocol passthrough.
+		var raw map[string]json.RawMessage
+		if jerr := json.Unmarshal(body, &raw); jerr != nil {
+			return nil, fmt.Errorf("failed to decode responses api request: %w", err)
+		}
+		modelName := ""
+		if v, ok := raw["model"]; ok {
+			_ = json.Unmarshal(v, &modelName)
+		}
+		if modelName == "" {
+			return nil, fmt.Errorf("failed to decode responses api request: %w", err)
+		}
+
+		stream := (*bool)(nil)
+		if v, ok := raw["stream"]; ok {
+			var b bool
+			if jerr := json.Unmarshal(v, &b); jerr == nil {
+				stream = &b
+			}
+		}
+
+		internalReq := &model.InternalLLMRequest{
+			Model:        modelName,
+			Stream:       stream,
+			RawAPIFormat: model.APIFormatOpenAIResponse,
+			RawRequest:   body,
+			RawOnly:      true,
+		}
+
+		// Preserve raw tools/tool_choice even in raw-only mode.
+		extra := make(map[string]json.RawMessage)
+		if v, ok := raw["tools"]; ok {
+			extra["tools"] = v
+		}
+		if v, ok := raw["tool_choice"]; ok {
+			extra["tool_choice"] = v
+		}
+		if len(extra) > 0 {
+			if b, jerr := json.Marshal(extra); jerr == nil {
+				internalReq.ExtraBody = b
+			}
+		}
+		return internalReq, nil
 	}
 
 	if req.Model == "" {
@@ -71,6 +113,7 @@ func (i *ResponseInbound) TransformRequest(ctx context.Context, body []byte) (*m
 	if err != nil {
 		return nil, err
 	}
+	internalReq.RawRequest = body
 
 	// If the client requested reasoning summary via Responses API parameters, emit
 	// reasoning summary stream events instead of reasoning text to avoid duplicating
@@ -99,7 +142,6 @@ func (i *ResponseInbound) TransformRequest(ctx context.Context, body []byte) (*m
 
 	return internalReq, nil
 }
-
 func (i *ResponseInbound) TransformResponse(ctx context.Context, response *model.InternalLLMResponse) ([]byte, error) {
 	if response == nil {
 		return nil, fmt.Errorf("response is nil")
@@ -829,7 +871,10 @@ func (i *ResponseInbound) GetInternalResponse(ctx context.Context) (*model.Inter
 	return result, nil
 }
 
-// formatSSEData formats data as SSE data line
+// formatSSEData formats data as SSE data line.
+//
+// OpenAI REST streaming uses data-only SSE (no `event:` line). The event type is
+// carried by the JSON payload's `type` field.
 func formatSSEData(data []byte) []byte {
 	return []byte(fmt.Sprintf("data: %s\n\n", string(data)))
 }
@@ -1162,8 +1207,10 @@ func convertToInternalRequest(req *ResponsesRequest) (*model.InternalLLMRequest,
 		Metadata:            req.Metadata,
 		MaxCompletionTokens: req.MaxOutputTokens,
 		TopLogprobs:         req.TopLogprobs,
+		ParallelToolCalls:   req.ParallelToolCalls,
 		RawAPIFormat:        model.APIFormatOpenAIResponse,
 		TransformerMetadata: map[string]string{},
+		Include:             append([]string(nil), req.Include...),
 	}
 	chatReq.Include = req.Include
 	if req.StreamOptions != nil && req.StreamOptions.IncludeObfuscation != nil {

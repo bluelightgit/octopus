@@ -16,26 +16,56 @@ import (
 type ChatOutbound struct{}
 
 func (o *ChatOutbound) TransformRequest(ctx context.Context, request *model.InternalLLMRequest, baseUrl, key string) (*http.Request, error) {
-	request.ClearHelpFields()
-
-	// Convert developer role to system role for compatibility
-	for i := range request.Messages {
-		if request.Messages[i].Role == "developer" {
-			request.Messages[i].Role = "system"
-		}
+	if request == nil {
+		return nil, fmt.Errorf("request is nil")
 	}
-
-	if request.Stream != nil && *request.Stream {
-		if request.StreamOptions == nil {
-			request.StreamOptions = &model.StreamOptions{IncludeUsage: true}
-		} else if !request.StreamOptions.IncludeUsage {
-			request.StreamOptions.IncludeUsage = true
+	// Same-protocol passthrough: preserve raw Chat Completions request fields.
+	var body []byte
+	var err error
+	if request != nil && request.RawAPIFormat == model.APIFormatOpenAIChatCompletion && len(request.RawRequest) > 0 {
+		body, err = rewriteChatCompletionsRequestBody(request.RawRequest, request.Model, request.Stream)
+		if err != nil {
+			return nil, fmt.Errorf("failed to rewrite chat completions request body: %w", err)
 		}
-	}
+	} else {
+		// Avoid mutating the shared request (used for retries/metrics).
+		copyReq := *request
+		copyReq.Messages = append([]model.Message(nil), request.Messages...)
+		if request.StreamOptions != nil {
+			so := *request.StreamOptions
+			copyReq.StreamOptions = &so
+		}
+		copyReq.ClearHelpFields()
 
-	body, err := json.Marshal(request)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		// Convert developer role to system role for compatibility
+		for i := range copyReq.Messages {
+			if copyReq.Messages[i].Role == "developer" {
+				copyReq.Messages[i].Role = "system"
+			}
+		}
+
+		if copyReq.Stream != nil && *copyReq.Stream {
+			if copyReq.StreamOptions == nil {
+				copyReq.StreamOptions = &model.StreamOptions{IncludeUsage: true}
+			} else if !copyReq.StreamOptions.IncludeUsage {
+				copyReq.StreamOptions.IncludeUsage = true
+			}
+		}
+
+		body, err = json.Marshal(&copyReq)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal request: %w", err)
+		}
+
+		// Preserve raw tool metadata from newer schemas when converting from
+		// Responses API into Chat Completions.
+		if request.RawAPIFormat == model.APIFormatOpenAIResponse {
+			if merged, mergeErr := mergeExtraBodyIntoJSON(body, request.ExtraBody); mergeErr == nil {
+				body = merged
+			} else {
+				return nil, fmt.Errorf("failed to merge extra body: %w", mergeErr)
+			}
+		}
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "", bytes.NewReader(body))
@@ -44,7 +74,11 @@ func (o *ChatOutbound) TransformRequest(ctx context.Context, request *model.Inte
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+	accept := "application/json"
+	if request.Stream != nil && *request.Stream {
+		accept = "text/event-stream"
+	}
+	req.Header.Set("Accept", accept)
 	req.Header.Set("Authorization", "Bearer "+key)
 
 	parsedUrl, err := url.Parse(strings.TrimSuffix(baseUrl, "/"))
@@ -55,6 +89,46 @@ func (o *ChatOutbound) TransformRequest(ctx context.Context, request *model.Inte
 	req.URL = parsedUrl
 	req.Method = http.MethodPost
 	return req, nil
+}
+
+func rewriteChatCompletionsRequestBody(raw []byte, modelName string, stream *bool) ([]byte, error) {
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil, err
+	}
+
+	if modelName != "" {
+		obj["model"] = modelName
+	}
+	if stream != nil {
+		obj["stream"] = *stream
+	}
+
+	// Preserve historical behavior: convert developer role to system role.
+	if messages, ok := obj["messages"].([]any); ok {
+		for i := range messages {
+			msg, ok := messages[i].(map[string]any)
+			if !ok || msg == nil {
+				continue
+			}
+			if role, ok := msg["role"].(string); ok && role == "developer" {
+				msg["role"] = "system"
+			}
+		}
+	}
+
+	// Preserve historical behavior: request usage in streaming mode so the relay
+	// can compute costs from upstream usage fields.
+	if stream != nil && *stream {
+		so, ok := obj["stream_options"].(map[string]any)
+		if !ok || so == nil {
+			so = map[string]any{}
+		}
+		so["include_usage"] = true
+		obj["stream_options"] = so
+	}
+
+	return json.Marshal(obj)
 }
 
 func (o *ChatOutbound) TransformResponse(ctx context.Context, response *http.Response) (*model.InternalLLMResponse, error) {

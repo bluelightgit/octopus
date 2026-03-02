@@ -35,8 +35,57 @@ type MessagesInbound struct {
 func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*model.InternalLLMRequest, error) {
 	var anthropicReq MessageRequest
 	if err := json.Unmarshal(body, &anthropicReq); err != nil {
-		return nil, err
+		// Fallback: keep raw request to enable same-protocol passthrough.
+		var raw map[string]json.RawMessage
+		if jerr := json.Unmarshal(body, &raw); jerr != nil {
+			return nil, err
+		}
+
+		modelName := ""
+		if v, ok := raw["model"]; ok {
+			_ = json.Unmarshal(v, &modelName)
+		}
+		if modelName == "" {
+			return nil, err
+		}
+
+		stream := (*bool)(nil)
+		if v, ok := raw["stream"]; ok {
+			var b bool
+			if jerr := json.Unmarshal(v, &b); jerr == nil {
+				stream = &b
+			}
+		}
+
+		maxTokens := int64(1)
+		if v, ok := raw["max_tokens"]; ok {
+			var n int64
+			if jerr := json.Unmarshal(v, &n); jerr == nil && n > 0 {
+				maxTokens = n
+			}
+		}
+
+		req := &model.InternalLLMRequest{
+			Model:               modelName,
+			MaxTokens:           &maxTokens,
+			Stream:              stream,
+			Metadata:            map[string]string{},
+			RawAPIFormat:        model.APIFormatAnthropicMessage,
+			RawRequest:          body,
+			RawOnly:             true,
+			TransformerMetadata: map[string]string{},
+		}
+		if v, ok := raw["metadata"]; ok {
+			var md struct {
+				UserID string `json:"user_id"`
+			}
+			if jerr := json.Unmarshal(v, &md); jerr == nil && md.UserID != "" {
+				req.Metadata["user_id"] = md.UserID
+			}
+		}
+		return req, nil
 	}
+
 	if anthropicReq.MaxTokens < 1 {
 		anthropicReq.MaxTokens = 1
 	}
@@ -50,6 +99,7 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 		RawAPIFormat:        model.APIFormatAnthropicMessage,
 		TransformerMetadata: map[string]string{},
 	}
+	chatReq.RawRequest = body
 	if anthropicReq.Metadata != nil {
 		chatReq.Metadata["user_id"] = anthropicReq.Metadata.UserID
 	}
@@ -990,5 +1040,5 @@ func mergeToolCall(toolCalls []model.ToolCall, delta model.ToolCall) []model.Too
 
 // formatSSEEvent 格式化为完整的 SSE 事件格式
 func formatSSEEvent(eventType string, data []byte) []byte {
-	return []byte(fmt.Sprintf("event:%s\ndata:%s\n\n", eventType, string(data)))
+	return []byte(fmt.Sprintf("event: %s\ndata: %s\n\n", eventType, string(data)))
 }

@@ -46,6 +46,7 @@ func (i *EmbeddingInbound) TransformRequest(ctx context.Context, body []byte) (*
 	request.EmbeddingEncodingFormat = openAIReq.EncodingFormat
 	request.User = openAIReq.User
 	request.RawAPIFormat = model.APIFormatOpenAIEmbedding
+	request.RawRequest = body
 
 	return &request, nil
 }

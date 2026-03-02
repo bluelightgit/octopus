@@ -1,8 +1,10 @@
 package relay
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,7 +22,6 @@ import (
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
 	"github.com/bestruirui/octopus/internal/utils/log"
 	"github.com/gin-gonic/gin"
-	"github.com/samber/lo"
 	"github.com/tmaxmax/go-sse"
 )
 
@@ -31,9 +32,9 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	if err != nil {
 		return
 	}
-	if internalRequest.RawAPIFormat == model.APIFormatOpenAIResponse {
-		internalRequest.Stream = lo.ToPtr(true)
-	}
+	// NOTE: Do not force stream mode for Responses requests.
+	// Some clients use non-stream Responses calls and expect a single JSON response.
+	// We preserve the client-provided `stream` field.
 	supportedModels := c.GetString("supported_models")
 	if supportedModels != "" {
 		supportedModelsArray := strings.Split(supportedModels, ",")
@@ -50,6 +51,13 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	group, err := op.GroupGetMap(requestModel, c.Request.Context())
 	if err != nil {
 		resp.Error(c, http.StatusNotFound, "model not found")
+		return
+	}
+
+	rawOnlyRequiredType, rawOnlyHasRequired := rawOnlyRequiredOutboundType(internalRequest)
+	rawOnlySawCompatible := false
+	if internalRequest.RawOnly && !rawOnlyHasRequired {
+		resp.Error(c, http.StatusBadRequest, "raw-only request format not supported")
 		return
 	}
 
@@ -98,6 +106,14 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		if !channel.Enabled {
 			iter.Skip(channel.ID, 0, channel.Name, "channel disabled")
 			continue
+		}
+
+		if internalRequest.RawOnly {
+			if channel.Type != rawOnlyRequiredType {
+				iter.Skip(channel.ID, 0, channel.Name, fmt.Sprintf("raw-only request requires channel type %d", rawOnlyRequiredType))
+				continue
+			}
+			rawOnlySawCompatible = true
 		}
 
 		usedKey := channel.GetChannelKey()
@@ -157,6 +173,30 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	}
 
 	// 所有通道都失败
+	var ue upstreamHTTPError
+	if internalRequest.RawOnly && rawOnlyHasRequired && !rawOnlySawCompatible {
+		err := errors.New("no same-protocol channel for raw-only request")
+		metrics.Save(c.Request.Context(), false, err, iter.Attempts())
+		resp.Error(c, http.StatusBadRequest, "no same-protocol channel for raw-only request")
+		return
+	}
+
+	if lastErr != nil && errors.As(lastErr, &ue) {
+		if metrics != nil {
+			metrics.SetClientResponseBody(ue.Body)
+		}
+		metrics.Save(c.Request.Context(), false, lastErr, iter.Attempts())
+		ct := strings.TrimSpace(ue.ContentType)
+		if ct == "" {
+			ct = "application/json"
+		}
+		code := ue.StatusCode
+		if code <= 0 {
+			code = http.StatusBadGateway
+		}
+		c.Data(code, ct, ue.Body)
+		return
+	}
 	metrics.Save(c.Request.Context(), false, lastErr, iter.Attempts())
 	resp.Error(c, http.StatusBadGateway, "all channels failed")
 }
@@ -214,7 +254,7 @@ func (ra *relayAttempt) attempt() attemptResult {
 	return attemptResult{
 		Success: false,
 		Written: written,
-		Err:     fmt.Errorf("channel %s failed: %v", ra.channel.Name, fwdErr),
+		Err:     fmt.Errorf("channel %s failed: %w", ra.channel.Name, fwdErr),
 	}
 }
 
@@ -270,24 +310,15 @@ func (ra *relayAttempt) forward() (int, error) {
 	}
 	defer response.Body.Close()
 
-	// 检查响应状态
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		body, err := io.ReadAll(response.Body)
-		if err != nil {
-			return 0, fmt.Errorf("failed to read response body: %w", err)
-		}
-		return 0, fmt.Errorf("upstream error: %d: %s", response.StatusCode, string(body))
-	}
-
-	// 处理响应
+	// 处理响应（包含非 2xx 错误透传/转换）
 	if ra.internalRequest.Stream != nil && *ra.internalRequest.Stream {
 		if err := ra.handleStreamResponse(ctx, response); err != nil {
-			return 0, err
+			return response.StatusCode, err
 		}
 		return response.StatusCode, nil
 	}
 	if err := ra.handleResponse(ctx, response); err != nil {
-		return 0, err
+		return response.StatusCode, err
 	}
 	return response.StatusCode, nil
 }
@@ -331,14 +362,25 @@ func (ra *relayAttempt) sendRequest(req *http.Request) (*http.Response, error) {
 
 // handleStreamResponse 处理流式响应
 func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http.Response) error {
+	if response == nil {
+		return fmt.Errorf("response is nil")
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 256*1024))
+		return upstreamHTTPError{
+			StatusCode:  response.StatusCode,
+			ContentType: response.Header.Get("Content-Type"),
+			Body:        body,
+		}
+	}
 	if ct := response.Header.Get("Content-Type"); ct != "" && !strings.Contains(strings.ToLower(ct), "text/event-stream") {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 16*1024))
 		return fmt.Errorf("upstream returned non-SSE content-type %q for stream request: %s", ct, string(body))
 	}
 
-	passthroughResponsesSSE := ra.shouldPassthroughResponsesSSE()
-	if passthroughResponsesSSE {
-		log.Infof("responses SSE passthrough enabled for channel %s", ra.channel.Name)
+	passthroughSSE := ra.shouldPassthroughSSE()
+	if passthroughSSE {
+		log.Infof("SSE passthrough enabled for channel %s", ra.channel.Name)
 	}
 
 	// 设置 SSE 响应头
@@ -350,19 +392,31 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 	firstToken := true
 
 	type sseReadResult struct {
-		data string
-		err  error
+		eventType string
+		data      string
+		err       error
 	}
-	results := make(chan sseReadResult, 1)
+
+	stop := make(chan struct{})
+	defer close(stop)
+
+	results := make(chan sseReadResult, 16)
 	go func() {
 		defer close(results)
 		readCfg := &sse.ReadConfig{MaxEventSize: maxSSEEventSize}
 		for ev, err := range sse.Read(response.Body, readCfg) {
 			if err != nil {
-				results <- sseReadResult{err: err}
+				select {
+				case results <- sseReadResult{err: err}:
+				case <-stop:
+				}
 				return
 			}
-			results <- sseReadResult{data: ev.Data}
+			select {
+			case results <- sseReadResult{eventType: ev.Type, data: ev.Data}:
+			case <-stop:
+				return
+			}
 		}
 	}()
 
@@ -382,6 +436,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		select {
 		case <-ctx.Done():
 			log.Infof("client disconnected, stopping stream")
+			_ = response.Body.Close()
 			return nil
 		case <-firstTokenC:
 			log.Warnf("first token timeout (%ds), switching channel", ra.firstTokenTimeOutSec)
@@ -394,6 +449,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			}
 			if r.err != nil {
 				log.Warnf("failed to read event: %v", r.err)
+				_ = response.Body.Close()
 				return fmt.Errorf("failed to read stream event: %w", r.err)
 			}
 
@@ -402,20 +458,30 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				err  error
 			)
 
-			if passthroughResponsesSSE {
+			if passthroughSSE {
 				if r.data == "" {
 					continue
 				}
 				ra.tapStreamForMetrics(ctx, r.data)
-				data = formatSSEDataString(r.data)
+				switch ra.internalRequest.RawAPIFormat {
+				case model.APIFormatAnthropicMessage:
+					data = formatSSEEventString(r.eventType, r.data)
+				default:
+					data = formatSSEDataString(r.data)
+				}
 
 				// Stop early once the upstream signals completion.
 				if strings.TrimSpace(r.data) == "[DONE]" {
 					if firstToken {
 						ra.metrics.SetFirstTokenTime(time.Now())
+						firstToken = false
+					}
+					if ra.metrics != nil {
+						ra.metrics.AppendClientResponseChunk(data)
 					}
 					ra.c.Writer.Write(data)
 					ra.c.Writer.Flush()
+					_ = response.Body.Close()
 					return nil
 				}
 			} else {
@@ -424,6 +490,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 					continue
 				}
 			}
+
 			if firstToken {
 				ra.metrics.SetFirstTokenTime(time.Now())
 				firstToken = false
@@ -439,33 +506,50 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				}
 			}
 
+			if ra.metrics != nil {
+				ra.metrics.AppendClientResponseChunk(data)
+			}
 			ra.c.Writer.Write(data)
 			ra.c.Writer.Flush()
 		}
 	}
 }
-
-func (ra *relayAttempt) shouldPassthroughResponsesSSE() bool {
+func (ra *relayAttempt) shouldPassthroughSSE() bool {
 	if ra == nil || ra.internalRequest == nil || ra.channel == nil {
-		return false
-	}
-	if ra.internalRequest.RawAPIFormat != model.APIFormatOpenAIResponse {
-		return false
-	}
-	if ra.channel.Type != outbound.OutboundTypeOpenAIResponse {
 		return false
 	}
 	if ra.internalRequest.Stream == nil || !*ra.internalRequest.Stream {
 		return false
 	}
-	return true
+	// We only passthrough streaming responses when the upstream response stream
+	// is already in the client protocol format.
+	switch ra.internalRequest.RawAPIFormat {
+	case model.APIFormatOpenAIChatCompletion:
+		return ra.channel.Type == outbound.OutboundTypeOpenAIChat
+	case model.APIFormatOpenAIResponse:
+		return ra.channel.Type == outbound.OutboundTypeOpenAIResponse
+	case model.APIFormatAnthropicMessage:
+		return ra.channel.Type == outbound.OutboundTypeAnthropic
+	default:
+		return false
+	}
 }
 
 func (ra *relayAttempt) tapStreamForMetrics(ctx context.Context, data string) {
+	if ra == nil || ra.internalRequest == nil {
+		return
+	}
+	if ra.internalRequest.Stream == nil || !*ra.internalRequest.Stream {
+		return
+	}
+	if ra.outAdapter == nil || ra.inAdapter == nil {
+		return
+	}
+
 	internalStream, err := ra.outAdapter.TransformStream(ctx, []byte(data))
 	if err != nil {
 		log.Warnf("failed to tap outbound stream for metrics: %v", err)
-		return
+		goto fallback
 	}
 	if internalStream != nil {
 		// Feed the internal chunk into inbound adapter so GetInternalResponse() can
@@ -483,8 +567,9 @@ func (ra *relayAttempt) tapStreamForMetrics(ctx context.Context, data string) {
 		return
 	}
 
+fallback:
 	// Fallback: try to parse usage directly from Responses stream events.
-	if ra.metrics == nil {
+	if ra.metrics == nil || ra.internalRequest.RawAPIFormat != model.APIFormatOpenAIResponse {
 		return
 	}
 	if ra.metrics.InternalResponse != nil && ra.metrics.InternalResponse.Usage != nil {
@@ -535,6 +620,17 @@ func formatSSEDataString(data string) []byte {
 	return []byte(sb.String())
 }
 
+func formatSSEEventString(eventType string, data string) []byte {
+	var sb strings.Builder
+	if strings.TrimSpace(eventType) != "" {
+		sb.WriteString("event: ")
+		sb.WriteString(eventType)
+		sb.WriteString("\n")
+	}
+	sb.Write(formatSSEDataString(data))
+	return []byte(sb.String())
+}
+
 // transformStreamData 转换流式数据
 func (ra *relayAttempt) transformStreamData(ctx context.Context, data string) ([]byte, error) {
 	internalStream, err := ra.outAdapter.TransformStream(ctx, []byte(data))
@@ -557,6 +653,67 @@ func (ra *relayAttempt) transformStreamData(ctx context.Context, data string) ([
 
 // handleResponse 处理非流式响应
 func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Response) error {
+	if response == nil {
+		return fmt.Errorf("response is nil")
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		bodyBytes, err := io.ReadAll(response.Body)
+		if err != nil {
+			log.Warnf("failed to read error response body: %v", err)
+			return fmt.Errorf("failed to read response body: %w", err)
+		}
+
+		// Best-effort: still populate internal response for metrics/logging.
+		if ra.outAdapter != nil && ra.inAdapter != nil {
+			clone := *response
+			clone.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			if internalResponse, err := ra.outAdapter.TransformResponse(ctx, &clone); err != nil {
+				log.Warnf("failed to tap error response for metrics: %v", err)
+			} else if internalResponse != nil {
+				_, _ = ra.inAdapter.TransformResponse(ctx, internalResponse)
+			}
+		}
+
+		return upstreamHTTPError{
+			StatusCode:  response.StatusCode,
+			ContentType: response.Header.Get("Content-Type"),
+			Body:        bodyBytes,
+		}
+	}
+
+	if ra.shouldPassthroughNonStream() {
+		bodyBytes, err := io.ReadAll(response.Body)
+		if err != nil {
+			log.Warnf("failed to read response body: %v", err)
+			return fmt.Errorf("failed to read response body: %w", err)
+		}
+		if len(bodyBytes) == 0 {
+			return fmt.Errorf("response body is empty")
+		}
+
+		// Best-effort: still populate internal response for metrics/logging without
+		// altering the client-facing passthrough response.
+		if ra.outAdapter != nil && ra.inAdapter != nil {
+			clone := *response
+			clone.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			if internalResponse, err := ra.outAdapter.TransformResponse(ctx, &clone); err != nil {
+				log.Warnf("failed to tap passthrough response for metrics: %v", err)
+			} else if internalResponse != nil {
+				_, _ = ra.inAdapter.TransformResponse(ctx, internalResponse)
+			}
+		}
+
+		contentType := strings.TrimSpace(response.Header.Get("Content-Type"))
+		if contentType == "" {
+			contentType = "application/json"
+		}
+		if ra.metrics != nil {
+			ra.metrics.SetClientResponseBody(bodyBytes)
+		}
+		ra.c.Data(http.StatusOK, contentType, bodyBytes)
+		return nil
+	}
+
 	internalResponse, err := ra.outAdapter.TransformResponse(ctx, response)
 	if err != nil {
 		log.Warnf("failed to transform response: %v", err)
@@ -569,8 +726,31 @@ func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Respo
 		return fmt.Errorf("failed to transform inbound response: %w", err)
 	}
 
+	if ra.metrics != nil {
+		ra.metrics.SetClientResponseBody(inResponse)
+	}
 	ra.c.Data(http.StatusOK, "application/json", inResponse)
 	return nil
+}
+
+func (ra *relayAttempt) shouldPassthroughNonStream() bool {
+	if ra == nil || ra.internalRequest == nil || ra.channel == nil {
+		return false
+	}
+	if ra.internalRequest.Stream != nil && *ra.internalRequest.Stream {
+		return false
+	}
+
+	switch ra.internalRequest.RawAPIFormat {
+	case model.APIFormatOpenAIChatCompletion:
+		return ra.channel.Type == outbound.OutboundTypeOpenAIChat
+	case model.APIFormatOpenAIResponse:
+		return ra.channel.Type == outbound.OutboundTypeOpenAIResponse
+	case model.APIFormatAnthropicMessage:
+		return ra.channel.Type == outbound.OutboundTypeAnthropic
+	default:
+		return false
+	}
 }
 
 // collectResponse 收集响应信息
@@ -581,4 +761,20 @@ func (ra *relayAttempt) collectResponse() {
 	}
 
 	ra.metrics.SetInternalResponse(internalResponse, ra.internalRequest.Model)
+}
+
+func rawOnlyRequiredOutboundType(req *model.InternalLLMRequest) (outbound.OutboundType, bool) {
+	if req == nil || !req.RawOnly {
+		return 0, false
+	}
+	switch req.RawAPIFormat {
+	case model.APIFormatOpenAIChatCompletion:
+		return outbound.OutboundTypeOpenAIChat, true
+	case model.APIFormatOpenAIResponse:
+		return outbound.OutboundTypeOpenAIResponse, true
+	case model.APIFormatAnthropicMessage:
+		return outbound.OutboundTypeAnthropic, true
+	default:
+		return 0, false
+	}
 }

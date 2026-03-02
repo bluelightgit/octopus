@@ -32,12 +32,22 @@ func (o *MessageOutbound) TransformRequest(ctx context.Context, request *model.I
 		return nil, fmt.Errorf("request is nil")
 	}
 
-	// Convert to Anthropic request format
-	anthropicReq := convertToAnthropicRequest(request)
+	var body []byte
+	var err error
+	// Same-protocol passthrough: preserve raw Anthropic Messages request fields.
+	if request.RawAPIFormat == model.APIFormatAnthropicMessage && len(request.RawRequest) > 0 {
+		body, err = rewriteAnthropicMessagesRequestBody(request.RawRequest, request.Model, request.Stream)
+		if err != nil {
+			return nil, fmt.Errorf("failed to rewrite anthropic request body: %w", err)
+		}
+	} else {
+		// Convert to Anthropic request format
+		anthropicReq := convertToAnthropicRequest(request)
 
-	body, err := json.Marshal(anthropicReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal anthropic request: %w", err)
+		body, err = json.Marshal(anthropicReq)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal anthropic request: %w", err)
+		}
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "", bytes.NewReader(body))
@@ -70,6 +80,27 @@ func (o *MessageOutbound) TransformRequest(ctx context.Context, request *model.I
 	req.URL = parsedUrl
 
 	return req, nil
+}
+
+func rewriteAnthropicMessagesRequestBody(raw []byte, modelName string, stream *bool) ([]byte, error) {
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil, err
+	}
+
+	if modelName != "" {
+		obj["model"] = modelName
+	}
+	if stream != nil {
+		obj["stream"] = *stream
+	}
+
+	// Ensure max_tokens is valid when present.
+	if v, ok := obj["max_tokens"].(float64); ok && v < 1 {
+		obj["max_tokens"] = float64(1)
+	}
+
+	return json.Marshal(obj)
 }
 
 func (o *MessageOutbound) TransformResponse(ctx context.Context, response *http.Response) (*model.InternalLLMResponse, error) {

@@ -2,16 +2,22 @@ package relay
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/price"
 	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/utils/log"
+)
+
+const (
+	maxLoggedClientRequestBytes  = 512 * 1024
+	maxLoggedClientResponseBytes = 1024 * 1024
 )
 
 // RelayMetrics 负责最终的日志收集与持久化
@@ -27,22 +33,111 @@ type RelayMetrics struct {
 	InternalRequest  *transformerModel.InternalLLMRequest
 	InternalResponse *transformerModel.InternalLLMResponse
 
+	// Client-facing request/response payloads (octopus external boundary).
+	// Stored as raw bytes to avoid coupling logs to internal message schemas.
+	ClientRequestBody  []byte
+	ClientResponseBody []byte
+
+	clientRequestTruncated  bool
+	clientResponseTruncated bool
+
 	// 统计指标
 	ActualModel string
 	Stats       model.StatsMetrics
 }
 
 func NewRelayMetrics(apiKeyID int, requestModel string, req *transformerModel.InternalLLMRequest) *RelayMetrics {
-	return &RelayMetrics{
+	m := &RelayMetrics{
 		APIKeyID:        apiKeyID,
 		RequestModel:    requestModel,
 		StartTime:       time.Now(),
 		InternalRequest: req,
 	}
+	if req != nil && len(req.RawRequest) > 0 {
+		m.SetClientRequestBody(req.RawRequest)
+	}
+	return m
 }
 
 func (m *RelayMetrics) SetFirstTokenTime(t time.Time) {
 	m.FirstTokenTime = t
+}
+
+func (m *RelayMetrics) SetClientRequestBody(body []byte) {
+	if m == nil {
+		return
+	}
+	m.ClientRequestBody, m.clientRequestTruncated = cloneAndTruncate(body, maxLoggedClientRequestBytes)
+}
+
+func (m *RelayMetrics) SetClientResponseBody(body []byte) {
+	if m == nil {
+		return
+	}
+	m.ClientResponseBody, m.clientResponseTruncated = cloneAndTruncate(body, maxLoggedClientResponseBytes)
+}
+
+func (m *RelayMetrics) AppendClientResponseChunk(chunk []byte) {
+	if m == nil {
+		return
+	}
+	if len(chunk) == 0 {
+		return
+	}
+	if m.clientResponseTruncated {
+		return
+	}
+
+	remain := maxLoggedClientResponseBytes - len(m.ClientResponseBody)
+	if remain <= 0 {
+		m.clientResponseTruncated = true
+		return
+	}
+	if len(chunk) > remain {
+		m.ClientResponseBody = append(m.ClientResponseBody, chunk[:remain]...)
+		m.clientResponseTruncated = true
+		return
+	}
+	m.ClientResponseBody = append(m.ClientResponseBody, chunk...)
+}
+
+func cloneAndTruncate(body []byte, max int) ([]byte, bool) {
+	if len(body) == 0 {
+		return nil, false
+	}
+	if max <= 0 || len(body) <= max {
+		b := make([]byte, len(body))
+		copy(b, body)
+		return b, false
+	}
+	b := make([]byte, max)
+	copy(b, body[:max])
+	return b, true
+}
+
+func encodeLogPayload(body []byte, truncated bool) string {
+	if len(body) == 0 {
+		return ""
+	}
+
+	if utf8.Valid(body) {
+		if !truncated {
+			return string(body)
+		}
+		return string(body) + "\n\n[octopus log truncated]\n"
+	}
+
+	payload := map[string]any{
+		"base64": base64.StdEncoding.EncodeToString(body),
+	}
+	if truncated {
+		payload["truncated"] = true
+	}
+	b, err := json.Marshal(payload)
+	if err == nil {
+		return string(b)
+	}
+	return fmt.Sprintf("{\"base64\":\"%s\",\"truncated\":%t}", base64.StdEncoding.EncodeToString(body), truncated)
 }
 
 func (m *RelayMetrics) SetInternalResponse(resp *transformerModel.InternalLLMResponse, actualModel string) {
@@ -62,9 +157,7 @@ func (m *RelayMetrics) SetInternalResponse(resp *transformerModel.InternalLLMRes
 		return
 	}
 	if usage.PromptTokensDetails == nil {
-		usage.PromptTokensDetails = &transformerModel.PromptTokensDetails{
-			CachedTokens: 0,
-		}
+		usage.PromptTokensDetails = &transformerModel.PromptTokensDetails{CachedTokens: 0}
 	}
 	if usage.AnthropicUsage {
 		m.Stats.InputCost = (float64(usage.PromptTokensDetails.CachedTokens)*modelPrice.CacheRead +
@@ -92,12 +185,12 @@ func (m *RelayMetrics) Save(ctx context.Context, success bool, err error, attemp
 		globalStats.RequestFailed = 1
 	}
 
+	channelID, channelName := finalChannel(attempts)
 	op.StatsTotalUpdate(globalStats)
 	op.StatsHourlyUpdate(globalStats)
 	op.StatsDailyUpdate(context.Background(), globalStats)
 	op.StatsAPIKeyUpdate(m.APIKeyID, globalStats)
-
-	channelID, channelName := finalChannel(attempts)
+	op.StatsChannelUpdate(channelID, globalStats)
 
 	log.Infof("relay complete: model=%s, channel=%d(%s), success=%t, duration=%dms, input_token=%d, output_token=%d, input_cost=%f, output_cost=%f, total_cost=%f, attempts=%d",
 		m.RequestModel, channelID, channelName, success, duration.Milliseconds(),
@@ -153,23 +246,21 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 		relayLog.Cost = m.Stats.InputCost + m.Stats.OutputCost
 	}
 
-	// 请求内容
-	if m.InternalRequest != nil {
+	// 请求内容（优先 client 原始内容）
+	if len(m.ClientRequestBody) > 0 {
+		relayLog.RequestContent = encodeLogPayload(m.ClientRequestBody, m.clientRequestTruncated)
+	} else if m.InternalRequest != nil {
 		if reqJSON, jsonErr := json.Marshal(m.InternalRequest); jsonErr == nil {
 			relayLog.RequestContent = string(reqJSON)
 		}
 	}
 
-	// 响应内容
-	if m.InternalResponse != nil {
+	// 响应内容（优先 client 原始内容）
+	if len(m.ClientResponseBody) > 0 {
+		relayLog.ResponseContent = encodeLogPayload(m.ClientResponseBody, m.clientResponseTruncated)
+	} else if m.InternalResponse != nil {
 		respForLog := m.filterResponseForLog(m.InternalResponse)
 		if respJSON, jsonErr := json.Marshal(respForLog); jsonErr == nil {
-			if m.InternalResponse.Usage != nil && m.InternalResponse.Usage.AnthropicUsage {
-				respStr := string(respJSON)
-				old := `"usage":{`
-				insert := fmt.Sprintf(`"usage":{"cache_creation_input_tokens":%d,`, m.InternalResponse.Usage.CacheCreationInputTokens)
-				respJSON = []byte(strings.Replace(respStr, old, insert, 1))
-			}
 			relayLog.ResponseContent = string(respJSON)
 		}
 	}

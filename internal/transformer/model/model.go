@@ -14,6 +14,7 @@ type APIFormat string
 
 const (
 	APIFormatOpenAIChatCompletion  APIFormat = "openai/chat_completions"
+	APIFormatOpenAICompletions     APIFormat = "openai/completions"
 	APIFormatOpenAIResponse        APIFormat = "openai/responses"
 	APIFormatOpenAIImageGeneration APIFormat = "openai/image_generation"
 	APIFormatOpenAIEmbedding       APIFormat = "openai/embeddings"
@@ -220,6 +221,10 @@ type InternalLLMRequest struct {
 	ExtraBody json.RawMessage `json:"extra_body,omitempty"`
 
 	// RawRequest is the raw request from the client.
+	// RawOnly indicates the request body couldn't be fully parsed into internal schema.
+	// It is only safe to forward this request via same-protocol passthrough.
+	RawOnly bool `json:"-"`
+
 	RawRequest []byte `json:"-"`
 
 	// RawAPIFormat is the original format of the request.
@@ -249,6 +254,10 @@ func (r *InternalLLMRequest) Validate() error {
 		return errors.New("model is required")
 	}
 
+	if r.RawOnly {
+		return nil
+	}
+
 	// 检查是否是 embedding 请求
 	isEmbeddingRequest := r.EmbeddingInput != nil
 	isChatRequest := len(r.Messages) > 0
@@ -273,7 +282,100 @@ func (r *InternalLLMRequest) Validate() error {
 		return errors.New("messages are required")
 	}
 
+	if isChatRequest {
+		r.fillMissingToolCallIDsFromToolMessages()
+		// r.fillMissingToolCallIDs()
+	}
+
 	return nil
+}
+
+func (r *InternalLLMRequest) fillMissingToolCallIDs() {
+	usedIDs := make(map[string]struct{})
+	for _, msg := range r.Messages {
+		for _, tc := range msg.ToolCalls {
+			if tc.ID == "" {
+				continue
+			}
+			usedIDs[tc.ID] = struct{}{}
+		}
+	}
+
+	sequence := 0
+	for messageIndex := range r.Messages {
+		for toolCallIndex := range r.Messages[messageIndex].ToolCalls {
+			toolCall := &r.Messages[messageIndex].ToolCalls[toolCallIndex]
+			if toolCall.ID != "" {
+				continue
+			}
+
+			candidate := fmt.Sprintf("call_octopus_%d_%d", messageIndex, toolCallIndex)
+			if _, exists := usedIDs[candidate]; exists {
+				for {
+					candidate = fmt.Sprintf("call_octopus_%d", sequence)
+					sequence++
+					if _, conflict := usedIDs[candidate]; !conflict {
+						break
+					}
+				}
+			}
+
+			toolCall.ID = candidate
+			usedIDs[candidate] = struct{}{}
+		}
+	}
+}
+
+
+func (r *InternalLLMRequest) fillMissingToolCallIDsFromToolMessages() {
+	for msgIndex := 0; msgIndex < len(r.Messages); msgIndex++ {
+		msg := &r.Messages[msgIndex]
+		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
+			continue
+		}
+
+		candidates := make([]string, 0, len(msg.ToolCalls))
+		for nextIndex := msgIndex + 1; nextIndex < len(r.Messages); nextIndex++ {
+			nextMsg := r.Messages[nextIndex]
+			if nextMsg.Role != "tool" {
+				break
+			}
+			if nextMsg.ToolCallID == nil || *nextMsg.ToolCallID == "" {
+				continue
+			}
+			candidates = append(candidates, *nextMsg.ToolCallID)
+		}
+
+		if len(candidates) == 0 {
+			continue
+		}
+
+		used := make(map[string]struct{})
+		for _, toolCall := range msg.ToolCalls {
+			if toolCall.ID == "" {
+				continue
+			}
+			used[toolCall.ID] = struct{}{}
+		}
+
+		candidateIndex := 0
+		for toolCallIndex := range msg.ToolCalls {
+			if msg.ToolCalls[toolCallIndex].ID != "" {
+				continue
+			}
+
+			for candidateIndex < len(candidates) {
+				candidate := candidates[candidateIndex]
+				candidateIndex++
+				if _, exists := used[candidate]; exists {
+					continue
+				}
+				msg.ToolCalls[toolCallIndex].ID = candidate
+				used[candidate] = struct{}{}
+				break
+			}
+		}
+	}
 }
 
 // IsEmbeddingRequest returns true if this is an embedding request.
