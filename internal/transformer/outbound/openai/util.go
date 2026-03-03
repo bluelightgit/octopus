@@ -18,6 +18,9 @@ func mergeExtraBodyIntoJSON(body []byte, extra json.RawMessage) ([]byte, error) 
 		return body, nil
 	}
 	for k, v := range extraObj {
+		if _, exists := baseObj[k]; exists {
+			continue
+		}
 		baseObj[k] = v
 	}
 	return json.Marshal(baseObj)
