@@ -363,6 +363,9 @@
             "firstTokenTimeOutHint": "Unit: seconds, only effective for streaming response, 0 = no limit",
             "sessionKeepTime": "Session Keep Time",
             "sessionKeepTimeHint": "Unit: seconds, keeps using the same channel within a session, 0 = disabled",
+            "preferredProtocolFamily": "Preferred Protocol",
+            "protocolRoutingMode": "Routing Strategy",
+            "protocolRoutingHint": "Prefer same-protocol passthrough when possible. If no same-protocol channel is available, routing falls back according to the selected strategy.",
             "items": "Selected Models",
             "addItem": "Add Model",
             "autoAdd": "Auto Add",
@@ -375,6 +378,18 @@
             "random": "Random",
             "failover": "Failover",
             "weighted": "Weighted"
+        },
+        "protocolFamily": {
+            "auto": "Auto Detect",
+            "openaiChat": "OpenAI Chat",
+            "openaiResponses": "OpenAI Responses",
+            "anthropicMessages": "Anthropic Messages",
+            "geminiContents": "Gemini Contents"
+        },
+        "routingMode": {
+            "preferSameProtocol": "Prefer Same Protocol",
+            "sameProtocolOnly": "Same Protocol Only",
+            "allowCrossProtocol": "Allow Cross Protocol"
         },
         "empty": "No groups yet, click the button above to create one"
     },

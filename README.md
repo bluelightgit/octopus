@@ -265,6 +265,13 @@ Groups aggregate multiple channels into a unified external model name.
 
 > 💡 **Example**: Create a group named `gpt-4o`, add multiple providers' GPT-4o channels to it, then access all channels via a unified `model: gpt-4o`.
 
+**Protocol Routing:**
+
+- Each group can declare a preferred protocol family: `auto`, `openai_chat`, `openai_responses`, `anthropic_messages`, or `gemini_contents`
+- `prefer_same_protocol` first tries same-protocol channels for direct passthrough, then falls back to cross-protocol conversion if needed
+- `same_protocol_only` only allows same-protocol channels and returns `400` when none match
+- `allow_cross_protocol` keeps the previous behavior and allows mixed-protocol routing immediately
+
 ---
 
 ### 💰 Price Management

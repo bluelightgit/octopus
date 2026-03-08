@@ -81,6 +81,9 @@ func (i *ChatInbound) TransformRequest(ctx context.Context, body []byte) (*model
 				request.ExtraBody = b
 			}
 		}
+		if requiresOpenAISameProtocolPassthrough(raw, model.APIFormatOpenAIChatCompletion) {
+			request.RawOnly = true
+		}
 	}
 	return &request, nil
 }

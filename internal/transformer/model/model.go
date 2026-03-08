@@ -330,7 +330,6 @@ func (r *InternalLLMRequest) fillMissingToolCallIDs() {
 	}
 }
 
-
 func (r *InternalLLMRequest) fillMissingToolCallIDsFromToolMessages() {
 	for msgIndex := 0; msgIndex < len(r.Messages); msgIndex++ {
 		msg := &r.Messages[msgIndex]
@@ -618,17 +617,39 @@ type Audio struct {
 
 type File struct {
 	// The filename of the file.
-	Filename string `json:"filename"`
+	Filename string `json:"filename,omitempty"`
 	// The base64 encoded data of the file.
-	FileData string `json:"file_data"`
+	FileData string `json:"file_data,omitempty"`
+	// The ID of the uploaded file.
+	FileID *string `json:"file_id,omitempty"`
+	// The URL of the file.
+	FileURL *string `json:"file_url,omitempty"`
 }
 
 // ResponseFormat specifies the format of the response.
 type ResponseFormat struct {
 	// Any of "json_schema", "json_object", "text".
-	Type string `json:"type"`
-	// TODO: Schema
+	Type       string          `json:"type"`
 	JSONSchema json.RawMessage `json:"json_schema,omitempty"`
+}
+
+func (r *ResponseFormat) ExtractJSONSchemaObject() map[string]any {
+	if r == nil || len(r.JSONSchema) == 0 {
+		return nil
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(r.JSONSchema, &raw); err != nil {
+		return nil
+	}
+	if len(raw) == 0 {
+		return nil
+	}
+
+	if schema, ok := raw["schema"].(map[string]any); ok && len(schema) > 0 {
+		return schema
+	}
+	return raw
 }
 
 // Response is the unified response model.

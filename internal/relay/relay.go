@@ -27,14 +27,11 @@ import (
 
 // Handler 处理入站请求并转发到上游服务
 func Handler(inboundType inbound.InboundType, c *gin.Context) {
-	// 解析请求
 	internalRequest, inAdapter, err := parseRequest(inboundType, c)
 	if err != nil {
 		return
 	}
-	// NOTE: Do not force stream mode for Responses requests.
-	// Some clients use non-stream Responses calls and expect a single JSON response.
-	// We preserve the client-provided `stream` field.
+
 	supportedModels := c.GetString("supported_models")
 	if supportedModels != "" {
 		supportedModelsArray := strings.Split(supportedModels, ",")
@@ -47,7 +44,6 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	requestModel := internalRequest.Model
 	apiKeyID := c.GetInt("api_key_id")
 
-	// 获取通道分组
 	group, err := op.GroupGetMap(requestModel, c.Request.Context())
 	if err != nil {
 		resp.Error(c, http.StatusNotFound, "model not found")
@@ -61,17 +57,32 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		return
 	}
 
-	// 创建迭代器（策略排序 + 粘性优先）
-	iter := balancer.NewIterator(group, apiKeyID, requestModel)
-	if iter.Len() == 0 {
-		resp.Error(c, http.StatusServiceUnavailable, "no available channel")
+	protocolPlan, err := buildProtocolRoutePlan(group, internalRequest)
+	if err != nil {
+		resp.Error(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	log.Infof("protocol routing for model %s: %s", requestModel, protocolRoutePlanSummary(protocolPlan))
 
-	// 初始化 Metrics
+	primaryGroup := cloneGroupWithItems(group, protocolPlan.Primary)
+	primaryIter := balancer.NewIterator(primaryGroup, apiKeyID, requestModel)
+	var fallbackIter *balancer.Iterator
+	if len(protocolPlan.Fallback) > 0 {
+		fallbackGroup := cloneGroupWithItems(group, protocolPlan.Fallback)
+		fallbackIter = balancer.NewIterator(fallbackGroup, apiKeyID, requestModel)
+	}
+
+	activeIter := primaryIter
+	if activeIter.Len() == 0 {
+		if fallbackIter == nil || fallbackIter.Len() == 0 {
+			resp.Error(c, http.StatusServiceUnavailable, "no available channel")
+			return
+		}
+		activeIter = fallbackIter
+		fallbackIter = nil
+	}
+
 	metrics := NewRelayMetrics(apiKeyID, requestModel, internalRequest)
-
-	// 请求级上下文
 	req := &relayRequest{
 		c:               c,
 		inAdapter:       inAdapter,
@@ -79,105 +90,122 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		metrics:         metrics,
 		apiKeyID:        apiKeyID,
 		requestModel:    requestModel,
-		iter:            iter,
+		iter:            activeIter,
 	}
 
 	var lastErr error
+	var firstCompatibilityErr error
+	attemptStarted := false
 
-	for iter.Next() {
-		select {
-		case <-c.Request.Context().Done():
-			log.Infof("request context canceled, stopping retry")
-			metrics.Save(c.Request.Context(), false, context.Canceled, iter.Attempts())
-			return
-		default:
-		}
+	for {
+		for activeIter.Next() {
+			select {
+			case <-c.Request.Context().Done():
+				log.Infof("request context canceled, stopping retry")
+				metrics.Save(c.Request.Context(), false, context.Canceled, mergeAttempts(primaryIter, fallbackIter, activeIter))
+				return
+			default:
+			}
 
-		item := iter.Item()
-
-		// 获取通道
-		channel, err := op.ChannelGet(item.ChannelID, c.Request.Context())
-		if err != nil {
-			log.Warnf("failed to get channel %d: %v", item.ChannelID, err)
-			iter.Skip(item.ChannelID, 0, fmt.Sprintf("channel_%d", item.ChannelID), fmt.Sprintf("channel not found: %v", err))
-			lastErr = err
-			continue
-		}
-		if !channel.Enabled {
-			iter.Skip(channel.ID, 0, channel.Name, "channel disabled")
-			continue
-		}
-
-		if internalRequest.RawOnly {
-			if channel.Type != rawOnlyRequiredType {
-				iter.Skip(channel.ID, 0, channel.Name, fmt.Sprintf("raw-only request requires channel type %d", rawOnlyRequiredType))
+			item := activeIter.Item()
+			channel, err := op.ChannelGet(item.ChannelID, c.Request.Context())
+			if err != nil {
+				log.Warnf("failed to get channel %d: %v", item.ChannelID, err)
+				activeIter.Skip(item.ChannelID, 0, fmt.Sprintf("channel_%d", item.ChannelID), fmt.Sprintf("channel not found: %v", err))
+				lastErr = err
 				continue
 			}
-			rawOnlySawCompatible = true
+			if !channel.Enabled {
+				activeIter.Skip(channel.ID, 0, channel.Name, "channel disabled")
+				continue
+			}
+
+			if internalRequest.RawOnly {
+				if channel.Type != rawOnlyRequiredType {
+					activeIter.Skip(channel.ID, 0, channel.Name, fmt.Sprintf("raw-only request requires channel type %d", rawOnlyRequiredType))
+					continue
+				}
+				rawOnlySawCompatible = true
+			}
+
+			usedKey := channel.GetChannelKey()
+			if usedKey.ChannelKey == "" {
+				activeIter.Skip(channel.ID, 0, channel.Name, "no available key")
+				continue
+			}
+
+			if activeIter.SkipCircuitBreak(channel.ID, usedKey.ID, channel.Name) {
+				continue
+			}
+
+			outAdapter := outbound.Get(channel.Type)
+			if outAdapter == nil {
+				activeIter.Skip(channel.ID, usedKey.ID, channel.Name, fmt.Sprintf("unsupported channel type: %d", channel.Type))
+				continue
+			}
+
+			if internalRequest.IsEmbeddingRequest() && !outbound.IsEmbeddingChannelType(channel.Type) {
+				activeIter.Skip(channel.ID, usedKey.ID, channel.Name, "channel type not compatible with embedding request")
+				continue
+			}
+			if internalRequest.IsChatRequest() && !outbound.IsChatChannelType(channel.Type) {
+				activeIter.Skip(channel.ID, usedKey.ID, channel.Name, "channel type not compatible with chat request")
+				continue
+			}
+			if compatErr := outbound.ValidateRequestCompatibility(channel.Type, internalRequest); compatErr != nil {
+				if firstCompatibilityErr == nil {
+					firstCompatibilityErr = compatErr
+				}
+				activeIter.Skip(channel.ID, usedKey.ID, channel.Name, compatErr.Error())
+				continue
+			}
+
+			internalRequest.Model = item.ModelName
+			log.Infof("request model %s, mode: %d, forwarding to channel: %s model: %s (attempt %d/%d, sticky=%t)",
+				requestModel, group.Mode, channel.Name, item.ModelName,
+				activeIter.Index()+1, activeIter.Len(), activeIter.IsSticky())
+
+			req.iter = activeIter
+			ra := &relayAttempt{
+				relayRequest:         req,
+				outAdapter:           outAdapter,
+				channel:              channel,
+				usedKey:              usedKey,
+				firstTokenTimeOutSec: group.FirstTokenTimeOut,
+			}
+
+			attemptStarted = true
+			result := ra.attempt()
+			if result.Success {
+				metrics.Save(c.Request.Context(), true, nil, mergeAttempts(primaryIter, fallbackIter, activeIter))
+				return
+			}
+			if result.Written {
+				metrics.Save(c.Request.Context(), false, result.Err, mergeAttempts(primaryIter, fallbackIter, activeIter))
+				return
+			}
+			lastErr = result.Err
 		}
 
-		usedKey := channel.GetChannelKey()
-		if usedKey.ChannelKey == "" {
-			iter.Skip(channel.ID, 0, channel.Name, "no available key")
-			continue
+		if fallbackIter == nil || activeIter == fallbackIter {
+			break
 		}
-
-		// 熔断检查
-		if iter.SkipCircuitBreak(channel.ID, usedKey.ID, channel.Name) {
-			continue
-		}
-
-		// 出站适配器
-		outAdapter := outbound.Get(channel.Type)
-		if outAdapter == nil {
-			iter.Skip(channel.ID, usedKey.ID, channel.Name, fmt.Sprintf("unsupported channel type: %d", channel.Type))
-			continue
-		}
-
-		// 类型兼容性检查
-		if internalRequest.IsEmbeddingRequest() && !outbound.IsEmbeddingChannelType(channel.Type) {
-			iter.Skip(channel.ID, usedKey.ID, channel.Name, "channel type not compatible with embedding request")
-			continue
-		}
-		if internalRequest.IsChatRequest() && !outbound.IsChatChannelType(channel.Type) {
-			iter.Skip(channel.ID, usedKey.ID, channel.Name, "channel type not compatible with chat request")
-			continue
-		}
-
-		// 设置实际模型
-		internalRequest.Model = item.ModelName
-
-		log.Infof("request model %s, mode: %d, forwarding to channel: %s model: %s (attempt %d/%d, sticky=%t)",
-			requestModel, group.Mode, channel.Name, item.ModelName,
-			iter.Index()+1, iter.Len(), iter.IsSticky())
-
-		// 构造尝试级上下文 -- 只写变化的 4 个字段
-		ra := &relayAttempt{
-			relayRequest:         req,
-			outAdapter:           outAdapter,
-			channel:              channel,
-			usedKey:              usedKey,
-			firstTokenTimeOutSec: group.FirstTokenTimeOut,
-		}
-
-		result := ra.attempt()
-		if result.Success {
-			metrics.Save(c.Request.Context(), true, nil, iter.Attempts())
-			return
-		}
-		if result.Written {
-			metrics.Save(c.Request.Context(), false, result.Err, iter.Attempts())
-			return
-		}
-		lastErr = result.Err
+		activeIter = fallbackIter
+		req.iter = activeIter
+		fallbackIter = nil
 	}
 
-	// 所有通道都失败
 	var ue upstreamHTTPError
 	if internalRequest.RawOnly && rawOnlyHasRequired && !rawOnlySawCompatible {
 		err := errors.New("no same-protocol channel for raw-only request")
-		metrics.Save(c.Request.Context(), false, err, iter.Attempts())
+		metrics.Save(c.Request.Context(), false, err, mergeAttempts(primaryIter, fallbackIter, activeIter))
 		resp.Error(c, http.StatusBadRequest, "no same-protocol channel for raw-only request")
+		return
+	}
+
+	if !attemptStarted && firstCompatibilityErr != nil {
+		metrics.Save(c.Request.Context(), false, firstCompatibilityErr, mergeAttempts(primaryIter, fallbackIter, activeIter))
+		resp.Error(c, http.StatusBadRequest, firstCompatibilityErr.Error())
 		return
 	}
 
@@ -185,7 +213,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		if metrics != nil {
 			metrics.SetClientResponseBody(ue.Body)
 		}
-		metrics.Save(c.Request.Context(), false, lastErr, iter.Attempts())
+		metrics.Save(c.Request.Context(), false, lastErr, mergeAttempts(primaryIter, fallbackIter, activeIter))
 		ct := strings.TrimSpace(ue.ContentType)
 		if ct == "" {
 			ct = "application/json"
@@ -197,8 +225,28 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		c.Data(code, ct, ue.Body)
 		return
 	}
-	metrics.Save(c.Request.Context(), false, lastErr, iter.Attempts())
+
+	metrics.Save(c.Request.Context(), false, lastErr, mergeAttempts(primaryIter, fallbackIter, activeIter))
 	resp.Error(c, http.StatusBadGateway, "all channels failed")
+}
+
+func mergeAttempts(primaryIter, fallbackIter, activeIter *balancer.Iterator) []dbmodel.ChannelAttempt {
+	attempts := make([]dbmodel.ChannelAttempt, 0)
+	seen := map[*balancer.Iterator]struct{}{}
+	appendAttempts := func(it *balancer.Iterator) {
+		if it == nil {
+			return
+		}
+		if _, ok := seen[it]; ok {
+			return
+		}
+		seen[it] = struct{}{}
+		attempts = append(attempts, it.Attempts()...)
+	}
+	appendAttempts(primaryIter)
+	appendAttempts(fallbackIter)
+	appendAttempts(activeIter)
+	return attempts
 }
 
 // attempt 统一管理一次通道尝试的完整生命周期
@@ -288,6 +336,10 @@ func parseRequest(inboundType inbound.InboundType, c *gin.Context) (*model.Inter
 func (ra *relayAttempt) forward() (int, error) {
 	ctx := ra.c.Request.Context()
 
+	if beta := strings.TrimSpace(ra.c.Request.Header.Get("Anthropic-Beta")); beta != "" {
+		ctx = context.WithValue(ctx, "anthropic_beta_header", beta)
+	}
+
 	// 构建出站请求
 	outboundRequest, err := ra.outAdapter.TransformRequest(
 		ctx,
@@ -329,7 +381,10 @@ func (ra *relayAttempt) copyHeaders(outboundRequest *http.Request) {
 		if hopByHopHeaders[strings.ToLower(key)] {
 			continue
 		}
-		if strings.EqualFold(key, "accept") {
+		if strings.EqualFold(key, "accept") || strings.EqualFold(key, "authorization") || strings.EqualFold(key, "x-api-key") {
+			continue
+		}
+		if outboundRequest.Header.Get(key) != "" {
 			continue
 		}
 		for _, value := range values {

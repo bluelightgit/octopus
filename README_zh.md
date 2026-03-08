@@ -266,6 +266,13 @@ http://localhost:3000
 
 > 💡 **示例**：创建分组名称为 `gpt-4o`，将多个供应商的 GPT-4o 渠道加入该分组，即可通过统一的 `model: gpt-4o` 访问所有渠道。
 
+**协议路由：**
+
+- 每个分组都可以声明协议族：`auto`、`openai_chat`、`openai_responses`、`anthropic_messages`、`gemini_contents`
+- `prefer_same_protocol` 会优先尝试同协议直通；若没有可用同协议渠道，再回退到跨协议转换
+- `same_protocol_only` 只允许同协议渠道；若没有匹配渠道会直接返回 `400`
+- `allow_cross_protocol` 保持原有行为，允许立即进入跨协议路由
+
 ---
 
 ### 💰 价格管理

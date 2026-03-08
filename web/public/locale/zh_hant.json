@@ -363,6 +363,9 @@
             "firstTokenTimeOutHint": "單位秒，僅串流響應起效，0 表示不限制",
             "sessionKeepTime": "會話保持",
             "sessionKeepTimeHint": "單位秒，會話期間保持使用同一供應源，0 表示停用",
+            "preferredProtocolFamily": "協議類型",
+            "protocolRoutingMode": "路由策略",
+            "protocolRoutingHint": "優先走與客戶端相同協議的直通鏈路；若沒有同協議供應源，再按路由策略決定是否允許跨協議轉換。",
             "items": "已選模型",
             "addItem": "新增模型",
             "autoAdd": "自動新增",
@@ -375,6 +378,18 @@
             "random": "隨機",
             "failover": "故障轉移",
             "weighted": "加權分配"
+        },
+        "protocolFamily": {
+            "auto": "自動識別",
+            "openaiChat": "OpenAI Chat",
+            "openaiResponses": "OpenAI Responses",
+            "anthropicMessages": "Anthropic Messages",
+            "geminiContents": "Gemini Contents"
+        },
+        "routingMode": {
+            "preferSameProtocol": "優先同協議",
+            "sameProtocolOnly": "僅同協議",
+            "allowCrossProtocol": "允許跨協議"
         },
         "empty": "暫無分組，點擊左上角按鈕建立"
     },

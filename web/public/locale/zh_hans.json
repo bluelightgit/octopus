@@ -363,6 +363,9 @@
             "firstTokenTimeOutHint": "单位秒，仅流式响应起效，0 表示不限制",
             "sessionKeepTime": "会话保持",
             "sessionKeepTimeHint": "单位秒，会话期间保持使用同一渠道，0 表示禁用",
+            "preferredProtocolFamily": "协议类型",
+            "protocolRoutingMode": "路由策略",
+            "protocolRoutingHint": "优先走与客户端相同协议的直通链路；若没有同协议渠道，再按路由策略决定是否允许跨协议转换。",
             "items": "已选模型",
             "addItem": "添加模型",
             "autoAdd": "自动添加",
@@ -375,6 +378,18 @@
             "random": "随机",
             "failover": "故障转移",
             "weighted": "加权分配"
+        },
+        "protocolFamily": {
+            "auto": "自动识别",
+            "openaiChat": "OpenAI Chat",
+            "openaiResponses": "OpenAI Responses",
+            "anthropicMessages": "Anthropic Messages",
+            "geminiContents": "Gemini Contents"
+        },
+        "routingMode": {
+            "preferSameProtocol": "优先同协议",
+            "sameProtocolOnly": "仅同协议",
+            "allowCrossProtocol": "允许跨协议"
         },
         "empty": "暂无分组，点击左上角按钮创建"
     },

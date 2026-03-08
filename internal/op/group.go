@@ -47,6 +47,12 @@ func GroupGetMap(name string, ctx context.Context) (model.Group, error) {
 }
 
 func GroupCreate(group *model.Group, ctx context.Context) error {
+	if group.PreferredProtocolFamily == "" {
+		group.PreferredProtocolFamily = model.GroupProtocolFamilyAuto
+	}
+	if group.ProtocolRoutingMode == "" {
+		group.ProtocolRoutingMode = model.GroupProtocolRoutingModePreferSameProtocol
+	}
 	if err := db.GetDB().WithContext(ctx).Create(group).Error; err != nil {
 		return err
 	}
@@ -91,6 +97,14 @@ func GroupUpdate(req *model.GroupUpdateRequest, ctx context.Context) (*model.Gro
 	if req.SessionKeepTime != nil {
 		selectFields = append(selectFields, "session_keep_time")
 		updates.SessionKeepTime = *req.SessionKeepTime
+	}
+	if req.PreferredProtocolFamily != nil {
+		selectFields = append(selectFields, "preferred_protocol_family")
+		updates.PreferredProtocolFamily = *req.PreferredProtocolFamily
+	}
+	if req.ProtocolRoutingMode != nil {
+		selectFields = append(selectFields, "protocol_routing_mode")
+		updates.ProtocolRoutingMode = *req.ProtocolRoutingMode
 	}
 
 	if len(selectFields) > 0 {
