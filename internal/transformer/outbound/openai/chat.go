@@ -37,13 +37,6 @@ func (o *ChatOutbound) TransformRequest(ctx context.Context, request *model.Inte
 		}
 		copyReq.ClearHelpFields()
 
-		// Convert developer role to system role for compatibility
-		for i := range copyReq.Messages {
-			if copyReq.Messages[i].Role == "developer" {
-				copyReq.Messages[i].Role = "system"
-			}
-		}
-
 		if copyReq.Stream != nil && *copyReq.Stream {
 			if copyReq.StreamOptions == nil {
 				copyReq.StreamOptions = &model.StreamOptions{IncludeUsage: true}
@@ -102,19 +95,6 @@ func rewriteChatCompletionsRequestBody(raw []byte, modelName string, stream *boo
 	}
 	if stream != nil {
 		obj["stream"] = *stream
-	}
-
-	// Preserve historical behavior: convert developer role to system role.
-	if messages, ok := obj["messages"].([]any); ok {
-		for i := range messages {
-			msg, ok := messages[i].(map[string]any)
-			if !ok || msg == nil {
-				continue
-			}
-			if role, ok := msg["role"].(string); ok && role == "developer" {
-				msg["role"] = "system"
-			}
-		}
 	}
 
 	// Preserve historical behavior: request usage in streaming mode so the relay

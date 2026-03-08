@@ -24,6 +24,20 @@ export enum GroupMode {
     Weighted = 4,
 }
 
+export enum GroupProtocolFamily {
+    Auto = 'auto',
+    OpenAIChat = 'openai_chat',
+    OpenAIResponses = 'openai_responses',
+    AnthropicMessages = 'anthropic_messages',
+    GeminiContents = 'gemini_contents',
+}
+
+export enum GroupProtocolRoutingMode {
+    PreferSameProtocol = 'prefer_same_protocol',
+    SameProtocolOnly = 'same_protocol_only',
+    AllowCrossProtocol = 'allow_cross_protocol',
+}
+
 /**
  * 分组信息
  */
@@ -34,6 +48,8 @@ export interface Group {
     match_regex: string;
     first_token_time_out?: number;
     session_keep_time?: number;
+    preferred_protocol_family?: GroupProtocolFamily;
+    protocol_routing_mode?: GroupProtocolRoutingMode;
     items?: GroupItem[];
 }
 
@@ -66,6 +82,8 @@ export interface GroupUpdateRequest {
     match_regex?: string;                 // 仅在匹配正则变更时发送
     first_token_time_out?: number;        // 仅在超时变更时发送
     session_keep_time?: number;           // 仅在会话保持时间变更时发送
+    preferred_protocol_family?: GroupProtocolFamily; // 仅在协议族变更时发送
+    protocol_routing_mode?: GroupProtocolRoutingMode; // 仅在协议路由模式变更时发送
     items_to_add?: GroupItemAddRequest[];    // 新增的 items
     items_to_update?: GroupItemUpdateRequest[]; // 更新的 items (priority 变更)
     items_to_delete?: number[];              // 删除的 item IDs

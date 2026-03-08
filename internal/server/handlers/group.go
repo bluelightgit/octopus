@@ -13,6 +13,24 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func isValidGroupProtocolFamily(v model.GroupProtocolFamily) bool {
+	switch v {
+	case "", model.GroupProtocolFamilyAuto, model.GroupProtocolFamilyOpenAIChat, model.GroupProtocolFamilyOpenAIResponses, model.GroupProtocolFamilyAnthropicMessages, model.GroupProtocolFamilyGeminiContents:
+		return true
+	default:
+		return false
+	}
+}
+
+func isValidGroupProtocolRoutingMode(v model.GroupProtocolRoutingMode) bool {
+	switch v {
+	case "", model.GroupProtocolRoutingModePreferSameProtocol, model.GroupProtocolRoutingModeSameProtocolOnly, model.GroupProtocolRoutingModeAllowCrossProtocol:
+		return true
+	default:
+		return false
+	}
+}
+
 func init() {
 	router.NewGroupRouter("/api/v1/group").
 		Use(middleware.Auth()).
@@ -54,6 +72,14 @@ func createGroup(c *gin.Context) {
 		resp.Error(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	if !isValidGroupProtocolFamily(group.PreferredProtocolFamily) {
+		resp.Error(c, http.StatusBadRequest, "invalid preferred_protocol_family")
+		return
+	}
+	if !isValidGroupProtocolRoutingMode(group.ProtocolRoutingMode) {
+		resp.Error(c, http.StatusBadRequest, "invalid protocol_routing_mode")
+		return
+	}
 	if group.MatchRegex != "" {
 		_, err := regexp2.Compile(group.MatchRegex, regexp2.ECMAScript)
 		if err != nil {
@@ -72,6 +98,14 @@ func updateGroup(c *gin.Context) {
 	var req model.GroupUpdateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		resp.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.PreferredProtocolFamily != nil && !isValidGroupProtocolFamily(*req.PreferredProtocolFamily) {
+		resp.Error(c, http.StatusBadRequest, "invalid preferred_protocol_family")
+		return
+	}
+	if req.ProtocolRoutingMode != nil && !isValidGroupProtocolRoutingMode(*req.ProtocolRoutingMode) {
+		resp.Error(c, http.StatusBadRequest, "invalid protocol_routing_mode")
 		return
 	}
 	if req.MatchRegex != nil {

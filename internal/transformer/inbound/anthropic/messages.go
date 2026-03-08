@@ -101,6 +101,11 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 		TransformerMetadata: map[string]string{},
 	}
 	chatReq.RawRequest = body
+	if beta := ctx.Value("anthropic_beta_header"); beta != nil {
+		if betaStr, ok := beta.(string); ok && betaStr != "" {
+			chatReq.TransformerMetadata["Anthropic-Beta"] = betaStr
+		}
+	}
 	if anthropicReq.Metadata != nil {
 		chatReq.Metadata["user_id"] = anthropicReq.Metadata.UserID
 	}
@@ -323,6 +328,13 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 
 		chatReq.Tools = tools
 	}
+	if anthropicReq.ToolChoice != nil {
+		chatReq.ToolChoice = convertToolChoiceToInternal(anthropicReq.ToolChoice)
+		if anthropicReq.ToolChoice.DisableParallelToolUse != nil {
+			parallelToolCalls := !*anthropicReq.ToolChoice.DisableParallelToolUse
+			chatReq.ParallelToolCalls = &parallelToolCalls
+		}
+	}
 
 	// Convert stop sequences
 	if len(anthropicReq.StopSequences) > 0 {
@@ -361,6 +373,34 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 		}
 	}
 	return chatReq, nil
+}
+
+func convertToolChoiceToInternal(toolChoice *ToolChoice) *model.ToolChoice {
+	if toolChoice == nil {
+		return nil
+	}
+
+	switch toolChoice.Type {
+	case "auto":
+		mode := "auto"
+		return &model.ToolChoice{ToolChoice: &mode}
+	case "none":
+		mode := "none"
+		return &model.ToolChoice{ToolChoice: &mode}
+	case "any":
+		mode := "required"
+		return &model.ToolChoice{ToolChoice: &mode}
+	case "tool":
+		if toolChoice.Name == nil || *toolChoice.Name == "" {
+			return nil
+		}
+		return &model.ToolChoice{NamedToolChoice: &model.NamedToolChoice{
+			Type:     "function",
+			Function: model.ToolFunction{Name: *toolChoice.Name},
+		}}
+	default:
+		return nil
+	}
 }
 
 func (i *MessagesInbound) TransformResponse(ctx context.Context, response *model.InternalLLMResponse) ([]byte, error) {

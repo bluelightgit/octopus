@@ -306,7 +306,9 @@ func convertLLMToGeminiRequest(request *model.InternalLLMRequest) *model.GeminiG
 			hasConfig = true
 		case "json_schema":
 			config.ResponseMimeType = "application/json"
-			// TODO: Convert JSON schema to Gemini schema format if schema is provided
+			if schema := buildGeminiResponseSchema(request.ResponseFormat); schema != nil {
+				config.ResponseSchema = schema
+			}
 			hasConfig = true
 		case "text":
 			config.ResponseMimeType = "text/plain"
@@ -584,6 +586,33 @@ func convertGeminiFinishReason(reason string) string {
 	default:
 		return "stop"
 	}
+}
+
+func buildGeminiResponseSchema(format *model.ResponseFormat) *model.GeminiSchema {
+	if format == nil {
+		return nil
+	}
+	schema := format.ExtractJSONSchemaObject()
+	if len(schema) == 0 {
+		return nil
+	}
+	copySchema := make(map[string]any, len(schema))
+	for k, v := range schema {
+		copySchema[k] = v
+	}
+	cleanGeminiSchema(copySchema)
+	b, err := json.Marshal(copySchema)
+	if err != nil {
+		return nil
+	}
+	var result model.GeminiSchema
+	if err := json.Unmarshal(b, &result); err != nil {
+		return nil
+	}
+	if result.Type == "" {
+		return nil
+	}
+	return &result
 }
 
 func cleanGeminiSchema(schema map[string]any) {

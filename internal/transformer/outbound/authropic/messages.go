@@ -65,6 +65,9 @@ func (o *MessageOutbound) TransformRequest(ctx context.Context, request *model.I
 	}
 	req.Header.Set("Anthropic-Version", "2023-06-01")
 	req.Header.Set("X-API-Key", key)
+	if beta := findHeaderValue(request, "Anthropic-Beta"); beta != "" {
+		req.Header.Set("Anthropic-Beta", beta)
+	}
 
 	// Parse and set URL
 	parsedUrl, err := url.Parse(strings.TrimSuffix(baseUrl, "/"))
@@ -80,6 +83,21 @@ func (o *MessageOutbound) TransformRequest(ctx context.Context, request *model.I
 	req.URL = parsedUrl
 
 	return req, nil
+}
+
+func findHeaderValue(request *model.InternalLLMRequest, key string) string {
+	if request == nil {
+		return ""
+	}
+	lookup := strings.ToLower(key)
+	if request.TransformerMetadata != nil {
+		for k, v := range request.TransformerMetadata {
+			if strings.ToLower(k) == lookup {
+				return v
+			}
+		}
+	}
+	return ""
 }
 
 func rewriteAnthropicMessagesRequestBody(raw []byte, modelName string, stream *bool) ([]byte, error) {
@@ -335,6 +353,9 @@ func convertToAnthropicRequest(req *model.InternalLLMRequest) *anthropicModel.Me
 	if len(req.Tools) > 0 {
 		result.Tools = convertTools(req.Tools)
 	}
+	if toolChoice := convertToolChoice(req.ToolChoice, req.ParallelToolCalls, len(result.Tools) > 0); toolChoice != nil {
+		result.ToolChoice = toolChoice
+	}
 
 	// Convert stop sequences
 	if req.Stop != nil {
@@ -380,7 +401,7 @@ func resolveMaxTokens(req *model.InternalLLMRequest) int64 {
 func convertSystemPrompt(req *model.InternalLLMRequest) *anthropicModel.SystemPrompt {
 	var systemMessages []model.Message
 	for _, msg := range req.Messages {
-		if msg.Role == "system" {
+		if msg.Role == "system" || msg.Role == "developer" {
 			systemMessages = append(systemMessages, msg)
 		}
 	}
@@ -417,7 +438,7 @@ func convertMessages(req *model.InternalLLMRequest) []anthropicModel.MessagePara
 	processedIndexes := make(map[int]bool)
 
 	for _, msg := range req.Messages {
-		if msg.Role == "system" {
+		if msg.Role == "system" || msg.Role == "developer" {
 			continue
 		}
 
@@ -739,6 +760,43 @@ func convertTools(tools []model.Tool) []anthropicModel.Tool {
 			CacheControl: convertCacheControl(tool.CacheControl),
 		})
 	}
+	return result
+}
+
+func convertToolChoice(tc *model.ToolChoice, parallelToolCalls *bool, hasTools bool) *anthropicModel.ToolChoice {
+	if !hasTools {
+		return nil
+	}
+
+	var result *anthropicModel.ToolChoice
+	if tc != nil {
+		if tc.ToolChoice != nil {
+			switch strings.ToLower(*tc.ToolChoice) {
+			case "auto":
+				result = &anthropicModel.ToolChoice{Type: "auto"}
+			case "none":
+				result = &anthropicModel.ToolChoice{Type: "none"}
+			case "required":
+				result = &anthropicModel.ToolChoice{Type: "any"}
+			}
+		} else if tc.NamedToolChoice != nil && tc.NamedToolChoice.Type == "function" {
+			name := tc.NamedToolChoice.Function.Name
+			result = &anthropicModel.ToolChoice{Type: "tool", Name: &name}
+		}
+	}
+
+	if result == nil {
+		if parallelToolCalls == nil {
+			return nil
+		}
+		result = &anthropicModel.ToolChoice{Type: "auto"}
+	}
+
+	if parallelToolCalls != nil {
+		disableParallel := !*parallelToolCalls
+		result.DisableParallelToolUse = &disableParallel
+	}
+
 	return result
 }
 

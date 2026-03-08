@@ -1,22 +1,22 @@
 'use client';
 
 import { useCallback, useMemo, useState, type FormEvent } from 'react';
-import { Check, ChevronDownIcon, Plus, Sparkles, Trash2 } from 'lucide-react';
+import { Check, ChevronDownIcon, Plus, Sparkles, Trash2, HelpCircle } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import * as AccordionPrimitive from '@radix-ui/react-accordion';
 import { useModelChannelList, type LLMChannel } from '@/api/endpoints/model';
 import { Button } from '@/components/ui/button';
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Accordion, AccordionContent, AccordionItem } from '@/components/ui/accordion';
 import { cn } from '@/lib/utils';
 import { getModelIcon } from '@/lib/model-icons';
-import type { GroupMode } from '@/api/endpoints/group';
+import { GroupProtocolFamily, GroupProtocolRoutingMode, type GroupMode } from '@/api/endpoints/group';
 import type { SelectedMember } from './ItemList';
 import { MemberList } from './ItemList';
 import { matchesGroupName, memberKey, normalizeKey, MODE_LABELS } from './utils';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/animate-ui/components/animate/tooltip';
-import { HelpCircle } from 'lucide-react';
 
 
 
@@ -26,6 +26,8 @@ export type GroupEditorValues = {
     mode: GroupMode;
     first_token_time_out: number;
     session_keep_time: number;
+    preferred_protocol_family: GroupProtocolFamily;
+    protocol_routing_mode: GroupProtocolRoutingMode;
     members: SelectedMember[];
 };
 
@@ -234,6 +236,8 @@ export function GroupEditor({
     const [mode, setMode] = useState<GroupMode>((initial?.mode ?? 1) as GroupMode);
     const [firstTokenTimeOut, setFirstTokenTimeOut] = useState<number>(initial?.first_token_time_out ?? 0);
     const [sessionKeepTime, setSessionKeepTime] = useState<number>(initial?.session_keep_time ?? 0);
+    const [preferredProtocolFamily, setPreferredProtocolFamily] = useState<GroupProtocolFamily>(initial?.preferred_protocol_family ?? GroupProtocolFamily.Auto);
+    const [protocolRoutingMode, setProtocolRoutingMode] = useState<GroupProtocolRoutingMode>(initial?.protocol_routing_mode ?? GroupProtocolRoutingMode.PreferSameProtocol);
     const [selectedMembers, setSelectedMembers] = useState<SelectedMember[]>(initial?.members ?? []);
     const [removingIds, setRemovingIds] = useState<Set<string>>(new Set());
 
@@ -317,6 +321,8 @@ export function GroupEditor({
             mode,
             first_token_time_out: firstTokenTimeOut,
             session_keep_time: sessionKeepTime,
+            preferred_protocol_family: preferredProtocolFamily,
+            protocol_routing_mode: protocolRoutingMode,
             members: selectedMembers,
         });
     };
@@ -419,6 +425,42 @@ export function GroupEditor({
                                 className="rounded-xl"
                             />
                         </Field>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <Field>
+                            <FieldLabel htmlFor="group-preferred-protocol-family">{t('form.preferredProtocolFamily')}</FieldLabel>
+                            <Select value={preferredProtocolFamily} onValueChange={(value) => setPreferredProtocolFamily(value as GroupProtocolFamily)}>
+                                <SelectTrigger id="group-preferred-protocol-family" className="w-full rounded-xl">
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value={GroupProtocolFamily.Auto}>{t('protocolFamily.auto')}</SelectItem>
+                                    <SelectItem value={GroupProtocolFamily.OpenAIChat}>{t('protocolFamily.openaiChat')}</SelectItem>
+                                    <SelectItem value={GroupProtocolFamily.OpenAIResponses}>{t('protocolFamily.openaiResponses')}</SelectItem>
+                                    <SelectItem value={GroupProtocolFamily.AnthropicMessages}>{t('protocolFamily.anthropicMessages')}</SelectItem>
+                                    <SelectItem value={GroupProtocolFamily.GeminiContents}>{t('protocolFamily.geminiContents')}</SelectItem>
+                                </SelectContent>
+                            </Select>
+                        </Field>
+
+                        <Field>
+                            <FieldLabel htmlFor="group-protocol-routing-mode">{t('form.protocolRoutingMode')}</FieldLabel>
+                            <Select value={protocolRoutingMode} onValueChange={(value) => setProtocolRoutingMode(value as GroupProtocolRoutingMode)}>
+                                <SelectTrigger id="group-protocol-routing-mode" className="w-full rounded-xl">
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value={GroupProtocolRoutingMode.PreferSameProtocol}>{t('routingMode.preferSameProtocol')}</SelectItem>
+                                    <SelectItem value={GroupProtocolRoutingMode.SameProtocolOnly}>{t('routingMode.sameProtocolOnly')}</SelectItem>
+                                    <SelectItem value={GroupProtocolRoutingMode.AllowCrossProtocol}>{t('routingMode.allowCrossProtocol')}</SelectItem>
+                                </SelectContent>
+                            </Select>
+                        </Field>
+                    </div>
+
+                    <div className="rounded-xl border border-border/50 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                        {t('form.protocolRoutingHint')}
                     </div>
 
                     {/* Mode */}
