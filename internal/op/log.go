@@ -16,6 +16,11 @@ import (
 const relayLogMaxSize = 20
 const relayLogMaxSizeNoDB = 100 // 当不保存到数据库时，允许更大的缓存用于实时查询
 
+const (
+	sqliteIncrementalVacuumMinFreePages = 1024
+	sqliteIncrementalVacuumMinFreeRatio = 0.10
+)
+
 var relayLogCache = make([]model.RelayLog, 0, relayLogMaxSize)
 var relayLogCacheLock sync.Mutex
 
@@ -158,7 +163,10 @@ func RelayLogSaveDBTask(ctx context.Context) error {
 		if err := relayLogFlushToDB(ctx); err != nil {
 			return err
 		}
-		return relayLogCleanup(ctx)
+		if err := relayLogCleanup(ctx); err != nil {
+			return err
+		}
+		return sqliteIncrementalVacuumIfNeeded(ctx)
 	}
 
 	// 如果未启用日志保存，检查缓存大小，如果超过限制则清理旧日志
@@ -184,6 +192,42 @@ func relayLogCleanup(ctx context.Context) error {
 
 	cutoffTime := time.Now().Add(-time.Duration(keepPeriod) * 24 * time.Hour).Unix()
 	return db.GetDB().WithContext(ctx).Where("time < ?", cutoffTime).Delete(&model.RelayLog{}).Error
+}
+
+func sqliteIncrementalVacuumIfNeeded(ctx context.Context) error {
+	if !db.IsSQLite() {
+		return nil
+	}
+
+	dbConn := db.GetDB().WithContext(ctx)
+
+	var pageCount int
+	if err := dbConn.Raw("PRAGMA page_count;").Row().Scan(&pageCount); err != nil {
+		return err
+	}
+
+	var freelistCount int
+	if err := dbConn.Raw("PRAGMA freelist_count;").Row().Scan(&freelistCount); err != nil {
+		return err
+	}
+
+	if pageCount <= 0 || freelistCount < sqliteIncrementalVacuumMinFreePages {
+		return nil
+	}
+
+	freeRatio := float64(freelistCount) / float64(pageCount)
+	if freeRatio < sqliteIncrementalVacuumMinFreeRatio {
+		return nil
+	}
+
+	log.Debugf("sqlite incremental vacuum triggered, page_count=%d, freelist_count=%d, free_ratio=%.2f", pageCount, freelistCount, freeRatio)
+	if err := dbConn.Exec("PRAGMA incremental_vacuum;").Error; err != nil {
+		return err
+	}
+	if err := dbConn.Exec("PRAGMA wal_checkpoint(TRUNCATE);").Error; err != nil {
+		return err
+	}
+	return nil
 }
 
 // RelayLogList 查询日志列表，支持可选的时间范围过滤
@@ -257,5 +301,8 @@ func RelayLogClear(ctx context.Context) error {
 	relayLogCacheLock.Lock()
 	relayLogCache = make([]model.RelayLog, 0, relayLogMaxSize)
 	relayLogCacheLock.Unlock()
-	return db.GetDB().WithContext(ctx).Where("1 = 1").Delete(&model.RelayLog{}).Error
+	if err := db.GetDB().WithContext(ctx).Where("1 = 1").Delete(&model.RelayLog{}).Error; err != nil {
+		return err
+	}
+	return sqliteIncrementalVacuumIfNeeded(ctx)
 }

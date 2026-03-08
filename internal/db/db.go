@@ -121,3 +121,7 @@ func Close() error {
 func GetDB() *gorm.DB {
 	return db
 }
+
+func IsSQLite() bool {
+	return db != nil && db.Dialector != nil && db.Dialector.Name() == "sqlite"
+}
