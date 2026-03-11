@@ -6,19 +6,33 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 
+	"github.com/bestruirui/octopus/internal/conf"
 	"github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
 	"golang.org/x/net/proxy"
 )
 
 var (
-	systemDirectClient *http.Client
-	systemProxyClient  *http.Client
-	systemProxyURL     string
-	clientLock         sync.RWMutex
+	systemDirectClient    *http.Client
+	systemProxyClient     *http.Client
+	systemProxyURL        string
+	clientLock            sync.RWMutex
+	responseHeaderTimeout = 30 * time.Second
 )
+
+func init() {
+	if raw := strings.TrimSpace(os.Getenv(strings.ToUpper(conf.APP_NAME) + "_RELAY_UPSTREAM_HEADER_TIMEOUT_MS")); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v >= 0 {
+			responseHeaderTimeout = time.Duration(v) * time.Millisecond
+		}
+	}
+}
 
 // GetHTTPClientSystemProxy returns a cached http.Client.
 // - useProxy=false: bypass proxy
@@ -101,6 +115,7 @@ func newHTTPClientNoProxy() (*http.Client, error) {
 		return nil, err
 	}
 	cloned.Proxy = nil
+	cloned.ResponseHeaderTimeout = responseHeaderTimeout
 	return &http.Client{Transport: cloned}, nil
 }
 
@@ -130,6 +145,8 @@ func newHTTPClientCustomProxy(proxyURLStr string) (*http.Client, error) {
 	default:
 		return nil, fmt.Errorf("unsupported proxy scheme: %s", proxyURL.Scheme)
 	}
+
+	cloned.ResponseHeaderTimeout = responseHeaderTimeout
 
 	return &http.Client{Transport: cloned}, nil
 }

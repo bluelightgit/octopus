@@ -170,6 +170,9 @@ All configuration options can be overridden via environment variables using the 
 | `OCTOPUS_LOG_LEVEL` | `log.level` |
 | `OCTOPUS_GITHUB_PAT` | For rate limiting when getting the latest version (optional) |
 | `OCTOPUS_RELAY_MAX_SSE_EVENT_SIZE` | Maximum SSE event size (optional) |
+| `OCTOPUS_RELAY_UPSTREAM_HEADER_TIMEOUT_MS` | Upstream response header timeout for relay requests (default: 30000ms) |
+| `OCTOPUS_RELAY_NON_STREAM_TIMEOUT_MS` | End-to-end timeout for non-stream relay requests (default: 300000ms) |
+| `OCTOPUS_RELAY_STREAM_IDLE_TIMEOUT_MS` | Idle timeout between upstream stream events (default: 90000ms) |
 
 ## 📸 Screenshots
 

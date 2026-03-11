@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/bestruirui/octopus/internal/db"
 	dbmodel "github.com/bestruirui/octopus/internal/model"
@@ -17,6 +19,78 @@ import (
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
 	"github.com/gin-gonic/gin"
 )
+
+func setupRelayTestEnv(t *testing.T) context.Context {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+
+	dbPath := filepath.Join(t.TempDir(), "relay-test.db")
+	if err := db.InitDB("sqlite", dbPath, false); err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	if err := op.InitCache(); err != nil {
+		t.Fatalf("InitCache failed: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := op.RelayLogClear(ctx); err != nil {
+		t.Fatalf("RelayLogClear failed: %v", err)
+	}
+	return ctx
+}
+
+func createRelayTestAPIKey(t *testing.T, ctx context.Context) *dbmodel.APIKey {
+	t.Helper()
+	apiKey := &dbmodel.APIKey{Name: "test-key", APIKey: "local-test-key", Enabled: true}
+	if err := op.APIKeyCreate(apiKey, ctx); err != nil {
+		t.Fatalf("APIKeyCreate failed: %v", err)
+	}
+	return apiKey
+}
+
+func createRelayTestChannel(t *testing.T, ctx context.Context, name string, channelType outbound.OutboundType, upstreamURL string) *dbmodel.Channel {
+	t.Helper()
+	channel := &dbmodel.Channel{
+		Name:     name,
+		Type:     channelType,
+		Enabled:  true,
+		BaseUrls: []dbmodel.BaseUrl{{URL: upstreamURL}},
+		Keys:     []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "upstream-key"}},
+	}
+	if err := op.ChannelCreate(channel, ctx); err != nil {
+		t.Fatalf("ChannelCreate failed: %v", err)
+	}
+	return channel
+}
+
+func createRelayTestGroupItem(t *testing.T, ctx context.Context, requestModel string, channelID int, upstreamModel string) {
+	t.Helper()
+	group := &dbmodel.Group{Name: requestModel, Mode: dbmodel.GroupModeFailover}
+	if err := op.GroupCreate(group, ctx); err != nil {
+		t.Fatalf("GroupCreate failed: %v", err)
+	}
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{GroupID: group.ID, ChannelID: channelID, ModelName: upstreamModel, Priority: 1, Weight: 1}, ctx); err != nil {
+		t.Fatalf("GroupItemAdd failed: %v", err)
+	}
+}
+
+func lastRelayLog(t *testing.T, ctx context.Context) dbmodel.RelayLog {
+	t.Helper()
+	page := 1
+	pageSize := 10
+	logs, err := op.RelayLogList(ctx, nil, nil, page, pageSize)
+	if err != nil {
+		t.Fatalf("RelayLogList failed: %v", err)
+	}
+	if len(logs) == 0 {
+		t.Fatalf("expected relay logs, got none")
+	}
+	return logs[0]
+}
 
 func TestRelayHandler_ResponsesToChatChannel_UsesChatToolSchema(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -457,5 +531,214 @@ func TestRelayHandler_SameProtocolOnly_RejectsWhenNoSameProtocolChannel(t *testi
 	}
 	if upstreamCalls != 0 {
 		t.Fatalf("upstream should not be called, got %d", upstreamCalls)
+	}
+}
+
+func TestRelayHandler_StreamEOFBeforeFirstEvent_Fails(t *testing.T) {
+	ctx := setupRelayTestEnv(t)
+	apiKey := createRelayTestAPIKey(t, ctx)
+
+	requestModel := "stream-eof-before-first-event"
+	upstreamModel := "stream-eof-before-first-event-upstream"
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	channel := createRelayTestChannel(t, ctx, "responses-channel", outbound.OutboundTypeOpenAIResponse, upstream.URL+"/v1")
+	createRelayTestGroupItem(t, ctx, requestModel, channel.ID, upstreamModel)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader([]byte(`{"model":"stream-eof-before-first-event","stream":true,"input":"hi"}`)))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	c.Set("api_key_id", apiKey.ID)
+
+	Handler(inbound.InboundTypeOpenAIResponse, c)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("unexpected status: %d, body: %s", w.Code, w.Body.String())
+	}
+	logItem := lastRelayLog(t, ctx)
+	if !strings.Contains(logItem.Error, "upstream stream ended before first event") {
+		t.Fatalf("unexpected relay error: %s", logItem.Error)
+	}
+	if logItem.ResponseContent != "" {
+		t.Fatalf("expected empty response content, got %q", logItem.ResponseContent)
+	}
+}
+
+func TestRelayHandler_StreamEOFBeforeTerminalEvent_Fails(t *testing.T) {
+	ctx := setupRelayTestEnv(t)
+	apiKey := createRelayTestAPIKey(t, ctx)
+
+	requestModel := "stream-eof-before-terminal"
+	upstreamModel := "stream-eof-before-terminal-upstream"
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"upstream\",\"status\":\"in_progress\",\"output\":[]}}\n\n"))
+	}))
+	defer upstream.Close()
+
+	channel := createRelayTestChannel(t, ctx, "responses-channel", outbound.OutboundTypeOpenAIResponse, upstream.URL+"/v1")
+	createRelayTestGroupItem(t, ctx, requestModel, channel.ID, upstreamModel)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader([]byte(`{"model":"stream-eof-before-terminal","stream":true,"input":"hi"}`)))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	c.Set("api_key_id", apiKey.ID)
+
+	Handler(inbound.InboundTypeOpenAIResponse, c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d, body: %s", w.Code, w.Body.String())
+	}
+	logItem := lastRelayLog(t, ctx)
+	if !strings.Contains(logItem.Error, "upstream stream ended unexpectedly before terminal event") {
+		t.Fatalf("unexpected relay error: %s", logItem.Error)
+	}
+	if !strings.Contains(w.Body.String(), `response.created`) {
+		t.Fatalf("expected partial streamed body, got %q", w.Body.String())
+	}
+	if !strings.Contains(logItem.ResponseContent, `"response.created"`) {
+		t.Fatalf("expected response content to include streamed event, got %q", logItem.ResponseContent)
+	}
+}
+
+func TestRelayHandler_StreamTerminalEvent_Succeeds(t *testing.T) {
+	ctx := setupRelayTestEnv(t)
+	apiKey := createRelayTestAPIKey(t, ctx)
+
+	requestModel := "stream-terminal-success"
+	upstreamModel := "stream-terminal-success-upstream"
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"upstream\",\"status\":\"in_progress\",\"output\":[]}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"upstream\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	channel := createRelayTestChannel(t, ctx, "responses-channel", outbound.OutboundTypeOpenAIResponse, upstream.URL+"/v1")
+	createRelayTestGroupItem(t, ctx, requestModel, channel.ID, upstreamModel)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader([]byte(`{"model":"stream-terminal-success","stream":true,"input":"hi"}`)))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	c.Set("api_key_id", apiKey.ID)
+
+	Handler(inbound.InboundTypeOpenAIResponse, c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d, body: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "data: [DONE]") {
+		t.Fatalf("expected terminal stream body, got %q", w.Body.String())
+	}
+	logItem := lastRelayLog(t, ctx)
+	if logItem.Error != "" {
+		t.Fatalf("expected empty relay error, got %q", logItem.Error)
+	}
+}
+
+func TestRelayHandler_StreamIdleTimeout_Fails(t *testing.T) {
+	ctx := setupRelayTestEnv(t)
+	apiKey := createRelayTestAPIKey(t, ctx)
+
+	prevIdle := relayStreamIdleTimeout
+	relayStreamIdleTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { relayStreamIdleTimeout = prevIdle })
+
+	requestModel := "stream-idle-timeout"
+	upstreamModel := "stream-idle-timeout-upstream"
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"upstream\",\"status\":\"in_progress\",\"output\":[]}}\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		time.Sleep(200 * time.Millisecond)
+	}))
+	defer upstream.Close()
+
+	channel := createRelayTestChannel(t, ctx, "responses-channel", outbound.OutboundTypeOpenAIResponse, upstream.URL+"/v1")
+	createRelayTestGroupItem(t, ctx, requestModel, channel.ID, upstreamModel)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader([]byte(`{"model":"stream-idle-timeout","stream":true,"input":"hi"}`)))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	c.Set("api_key_id", apiKey.ID)
+
+	Handler(inbound.InboundTypeOpenAIResponse, c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d, body: %s", w.Code, w.Body.String())
+	}
+	logItem := lastRelayLog(t, ctx)
+	if !strings.Contains(logItem.Error, "upstream stream idle timeout") {
+		t.Fatalf("unexpected relay error: %s", logItem.Error)
+	}
+	if !strings.Contains(w.Body.String(), `response.created`) {
+		t.Fatalf("expected partial streamed body, got %q", w.Body.String())
+	}
+}
+
+func TestRelayHandler_NonStreamTimeout_Fails(t *testing.T) {
+	ctx := setupRelayTestEnv(t)
+	apiKey := createRelayTestAPIKey(t, ctx)
+
+	prevTimeout := relayNonStreamTimeout
+	relayNonStreamTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { relayNonStreamTimeout = prevTimeout })
+
+	requestModel := "non-stream-timeout"
+	upstreamModel := "non-stream-timeout-upstream"
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1730000000,"status":"completed","model":"upstream","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
+	}))
+	defer upstream.Close()
+
+	channel := createRelayTestChannel(t, ctx, "responses-channel", outbound.OutboundTypeOpenAIResponse, upstream.URL+"/v1")
+	createRelayTestGroupItem(t, ctx, requestModel, channel.ID, upstreamModel)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader([]byte(`{"model":"non-stream-timeout","stream":false,"input":"hi"}`)))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	c.Set("api_key_id", apiKey.ID)
+
+	Handler(inbound.InboundTypeOpenAIResponse, c)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("unexpected status: %d, body: %s", w.Code, w.Body.String())
+	}
+	logItem := lastRelayLog(t, ctx)
+	if !strings.Contains(logItem.Error, "upstream non-stream timeout") {
+		t.Fatalf("unexpected relay error: %s", logItem.Error)
 	}
 }

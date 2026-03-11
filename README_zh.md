@@ -170,6 +170,9 @@ http://localhost:3000
 | `OCTOPUS_LOG_LEVEL` | `log.level` |
 | `OCTOPUS_GITHUB_PAT` | 用于获取最新版本时的速率限制(可选) |
 | `OCTOPUS_RELAY_MAX_SSE_EVENT_SIZE` | 最大 SSE 事件大小(可选) |
+| `OCTOPUS_RELAY_UPSTREAM_HEADER_TIMEOUT_MS` | Relay 上游响应头超时，默认 30000ms |
+| `OCTOPUS_RELAY_NON_STREAM_TIMEOUT_MS` | Relay 非流式请求总超时，默认 300000ms |
+| `OCTOPUS_RELAY_STREAM_IDLE_TIMEOUT_MS` | Relay 流式请求事件空闲超时，默认 90000ms |
 
 
 ## 📸 界面预览

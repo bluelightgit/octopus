@@ -332,9 +332,140 @@ func parseRequest(inboundType inbound.InboundType, c *gin.Context) (*model.Inter
 	return internalRequest, inAdapter, nil
 }
 
+func formatRelayTimeout(d time.Duration) string {
+	if d <= 0 {
+		return "0s"
+	}
+	if d%time.Second == 0 {
+		return fmt.Sprintf("%ds", int(d/time.Second))
+	}
+	return d.String()
+}
+
+func isTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	type timeout interface{ Timeout() bool }
+	var te timeout
+	return errors.As(err, &te) && te.Timeout()
+}
+
+func upstreamNonStreamTimeoutError() error {
+	return fmt.Errorf("upstream non-stream timeout after %s", formatRelayTimeout(relayNonStreamTimeout))
+}
+
+func upstreamStreamIdleTimeoutError() error {
+	return fmt.Errorf("upstream stream idle timeout after %s", formatRelayTimeout(relayStreamIdleTimeout))
+}
+
+func upstreamStreamBeforeFirstEventError() error {
+	return fmt.Errorf("upstream stream ended before first event")
+}
+
+func upstreamStreamUnexpectedEOFError() error {
+	return fmt.Errorf("upstream stream ended unexpectedly before terminal event")
+}
+
+func upstreamStreamReadError(err error) error {
+	return fmt.Errorf("upstream stream read error: %w", err)
+}
+
+func upstreamResponseReadError(err error) error {
+	return fmt.Errorf("upstream response read error: %w", err)
+}
+
+func (ra *relayAttempt) isStreamRequest() bool {
+	return ra != nil && ra.internalRequest != nil && ra.internalRequest.Stream != nil && *ra.internalRequest.Stream
+}
+
+func (ra *relayAttempt) isPassthroughTerminalEvent(eventType, data string) bool {
+	trimmed := strings.TrimSpace(data)
+	if trimmed == "[DONE]" {
+		return true
+	}
+
+	if ra == nil || ra.internalRequest == nil {
+		return false
+	}
+
+	switch ra.internalRequest.RawAPIFormat {
+	case model.APIFormatOpenAIResponse:
+		var payload struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal([]byte(data), &payload); err == nil {
+			switch payload.Type {
+			case "response.completed", "response.incomplete", "response.failed", "error":
+				return true
+			}
+		}
+	case model.APIFormatOpenAIChatCompletion:
+		var payload struct {
+			Choices []struct {
+				FinishReason *string `json:"finish_reason,omitempty"`
+			} `json:"choices,omitempty"`
+		}
+		if err := json.Unmarshal([]byte(data), &payload); err == nil {
+			for _, choice := range payload.Choices {
+				if choice.FinishReason != nil {
+					return true
+				}
+			}
+		}
+	case model.APIFormatAnthropicMessage:
+		return strings.EqualFold(strings.TrimSpace(eventType), "message_stop")
+	}
+
+	return false
+}
+
+func isTerminalInternalStream(stream *model.InternalLLMResponse) bool {
+	if stream == nil {
+		return false
+	}
+	if stream.Object == "[DONE]" {
+		return true
+	}
+	for _, choice := range stream.Choices {
+		if choice.FinishReason != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func stopTimer(timer *time.Timer) {
+	if timer == nil {
+		return
+	}
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+}
+
+func resetTimer(timer *time.Timer, d time.Duration) {
+	if timer == nil {
+		return
+	}
+	stopTimer(timer)
+	timer.Reset(d)
+}
+
 // forward 转发请求到上游服务
 func (ra *relayAttempt) forward() (int, error) {
 	ctx := ra.c.Request.Context()
+	var cancel context.CancelFunc
+	if !ra.isStreamRequest() && relayNonStreamTimeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, relayNonStreamTimeout)
+		defer cancel()
+	}
 
 	if beta := strings.TrimSpace(ra.c.Request.Header.Get("Anthropic-Beta")); beta != "" {
 		ctx = context.WithValue(ctx, "anthropic_beta_header", beta)
@@ -358,6 +489,9 @@ func (ra *relayAttempt) forward() (int, error) {
 	// 发送请求
 	response, err := ra.sendRequest(outboundRequest)
 	if err != nil {
+		if !ra.isStreamRequest() && relayNonStreamTimeout > 0 && isTimeoutError(ctx.Err()) {
+			return 0, upstreamNonStreamTimeoutError()
+		}
 		return 0, fmt.Errorf("failed to send request: %w", err)
 	}
 	defer response.Body.Close()
@@ -445,6 +579,8 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 	ra.c.Header("X-Accel-Buffering", "no")
 
 	firstToken := true
+	sawAnyEvent := false
+	sawTerminalEvent := false
 
 	type sseReadResult struct {
 		eventType string
@@ -481,9 +617,17 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		firstTokenTimer = time.NewTimer(time.Duration(ra.firstTokenTimeOutSec) * time.Second)
 		firstTokenC = firstTokenTimer.C
 		defer func() {
-			if firstTokenTimer != nil {
-				firstTokenTimer.Stop()
-			}
+			stopTimer(firstTokenTimer)
+		}()
+	}
+
+	var idleTimer *time.Timer
+	var idleC <-chan time.Time
+	if relayStreamIdleTimeout > 0 {
+		idleTimer = time.NewTimer(relayStreamIdleTimeout)
+		idleC = idleTimer.C
+		defer func() {
+			stopTimer(idleTimer)
 		}()
 	}
 
@@ -493,28 +637,53 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			log.Infof("client disconnected, stopping stream")
 			_ = response.Body.Close()
 			return nil
+		case <-idleC:
+			log.Warnf("upstream stream idle timeout after %s", formatRelayTimeout(relayStreamIdleTimeout))
+			_ = response.Body.Close()
+			return upstreamStreamIdleTimeoutError()
 		case <-firstTokenC:
 			log.Warnf("first token timeout (%ds), switching channel", ra.firstTokenTimeOutSec)
 			_ = response.Body.Close()
 			return fmt.Errorf("first token timeout (%ds)", ra.firstTokenTimeOutSec)
 		case r, ok := <-results:
 			if !ok {
-				log.Infof("stream end")
+				if !sawAnyEvent {
+					log.Warnf("upstream stream ended before first event")
+					return upstreamStreamBeforeFirstEventError()
+				}
+				if !sawTerminalEvent {
+					log.Warnf("upstream stream ended unexpectedly before terminal event")
+					return upstreamStreamUnexpectedEOFError()
+				}
+				log.Infof("stream end after terminal event")
 				return nil
 			}
 			if r.err != nil {
 				log.Warnf("failed to read event: %v", r.err)
 				_ = response.Body.Close()
-				return fmt.Errorf("failed to read stream event: %w", r.err)
+				return upstreamStreamReadError(r.err)
+			}
+
+			sawAnyEvent = true
+			if idleTimer != nil && !sawTerminalEvent {
+				resetTimer(idleTimer, relayStreamIdleTimeout)
 			}
 
 			var (
-				data []byte
-				err  error
+				data     []byte
+				err      error
+				terminal bool
 			)
 
 			if passthroughSSE {
+				terminal = ra.isPassthroughTerminalEvent(r.eventType, r.data)
 				if r.data == "" {
+					if terminal {
+						sawTerminalEvent = true
+						stopTimer(idleTimer)
+						idleTimer = nil
+						idleC = nil
+					}
 					continue
 				}
 				ra.tapStreamForMetrics(ctx, r.data)
@@ -527,6 +696,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 
 				// Stop early once the upstream signals completion.
 				if strings.TrimSpace(r.data) == "[DONE]" {
+					sawTerminalEvent = true
 					if firstToken {
 						ra.metrics.SetFirstTokenTime(time.Now())
 						firstToken = false
@@ -540,22 +710,30 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 					return nil
 				}
 			} else {
-				data, err = ra.transformStreamData(ctx, r.data)
+				data, terminal, err = ra.transformStreamData(ctx, r.data)
 				if err != nil || len(data) == 0 {
+					if terminal {
+						sawTerminalEvent = true
+						stopTimer(idleTimer)
+						idleTimer = nil
+						idleC = nil
+					}
 					continue
 				}
+			}
+
+			if terminal {
+				sawTerminalEvent = true
+				stopTimer(idleTimer)
+				idleTimer = nil
+				idleC = nil
 			}
 
 			if firstToken {
 				ra.metrics.SetFirstTokenTime(time.Now())
 				firstToken = false
 				if firstTokenTimer != nil {
-					if !firstTokenTimer.Stop() {
-						select {
-						case <-firstTokenTimer.C:
-						default:
-						}
-					}
+					stopTimer(firstTokenTimer)
 					firstTokenTimer = nil
 					firstTokenC = nil
 				}
@@ -687,23 +865,24 @@ func formatSSEEventString(eventType string, data string) []byte {
 }
 
 // transformStreamData 转换流式数据
-func (ra *relayAttempt) transformStreamData(ctx context.Context, data string) ([]byte, error) {
+func (ra *relayAttempt) transformStreamData(ctx context.Context, data string) ([]byte, bool, error) {
 	internalStream, err := ra.outAdapter.TransformStream(ctx, []byte(data))
 	if err != nil {
 		log.Warnf("failed to transform stream: %v", err)
-		return nil, err
+		return nil, false, err
 	}
 	if internalStream == nil {
-		return nil, nil
+		return nil, false, nil
 	}
+	terminal := isTerminalInternalStream(internalStream)
 
 	inStream, err := ra.inAdapter.TransformStream(ctx, internalStream)
 	if err != nil {
 		log.Warnf("failed to transform stream: %v", err)
-		return nil, err
+		return nil, terminal, err
 	}
 
-	return inStream, nil
+	return inStream, terminal, nil
 }
 
 // handleResponse 处理非流式响应
@@ -715,7 +894,10 @@ func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Respo
 		bodyBytes, err := io.ReadAll(response.Body)
 		if err != nil {
 			log.Warnf("failed to read error response body: %v", err)
-			return fmt.Errorf("failed to read response body: %w", err)
+			if relayNonStreamTimeout > 0 && isTimeoutError(ctx.Err()) {
+				return upstreamNonStreamTimeoutError()
+			}
+			return upstreamResponseReadError(err)
 		}
 
 		// Best-effort: still populate internal response for metrics/logging.
@@ -740,10 +922,13 @@ func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Respo
 		bodyBytes, err := io.ReadAll(response.Body)
 		if err != nil {
 			log.Warnf("failed to read response body: %v", err)
-			return fmt.Errorf("failed to read response body: %w", err)
+			if relayNonStreamTimeout > 0 && isTimeoutError(ctx.Err()) {
+				return upstreamNonStreamTimeoutError()
+			}
+			return upstreamResponseReadError(err)
 		}
 		if len(bodyBytes) == 0 {
-			return fmt.Errorf("response body is empty")
+			return fmt.Errorf("upstream response body is empty")
 		}
 
 		// Best-effort: still populate internal response for metrics/logging without
@@ -772,6 +957,9 @@ func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Respo
 	internalResponse, err := ra.outAdapter.TransformResponse(ctx, response)
 	if err != nil {
 		log.Warnf("failed to transform response: %v", err)
+		if relayNonStreamTimeout > 0 && isTimeoutError(ctx.Err()) {
+			return upstreamNonStreamTimeoutError()
+		}
 		return fmt.Errorf("failed to transform outbound response: %w", err)
 	}
 

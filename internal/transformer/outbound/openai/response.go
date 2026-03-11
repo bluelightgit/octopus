@@ -114,7 +114,7 @@ func (o *ResponseOutbound) TransformResponse(ctx context.Context, response *http
 	}
 
 	if len(body) == 0 {
-		return nil, fmt.Errorf("response body is empty")
+		return nil, fmt.Errorf("upstream response body is empty")
 	}
 
 	// Check for error response

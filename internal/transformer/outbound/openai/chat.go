@@ -118,7 +118,7 @@ func (o *ChatOutbound) TransformResponse(ctx context.Context, response *http.Res
 	}
 
 	if len(body) == 0 {
-		return nil, fmt.Errorf("response body is empty")
+		return nil, fmt.Errorf("upstream response body is empty")
 	}
 
 	var resp model.InternalLLMResponse

@@ -4,6 +4,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bestruirui/octopus/internal/conf"
 	dbmodel "github.com/bestruirui/octopus/internal/model"
@@ -18,10 +19,25 @@ import (
 // 默认 32MB，可通过环境变量 OCTOPUS_RELAY_MAX_SSE_EVENT_SIZE 覆盖。
 var maxSSEEventSize = 32 * 1024 * 1024
 
+var (
+	relayNonStreamTimeout  = 5 * time.Minute
+	relayStreamIdleTimeout = 90 * time.Second
+)
+
 func init() {
 	if raw := strings.TrimSpace(os.Getenv(strings.ToUpper(conf.APP_NAME) + "_RELAY_MAX_SSE_EVENT_SIZE")); raw != "" {
 		if v, err := strconv.Atoi(raw); err == nil && v > 0 {
 			maxSSEEventSize = v
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv(strings.ToUpper(conf.APP_NAME) + "_RELAY_NON_STREAM_TIMEOUT_MS")); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v >= 0 {
+			relayNonStreamTimeout = time.Duration(v) * time.Millisecond
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv(strings.ToUpper(conf.APP_NAME) + "_RELAY_STREAM_IDLE_TIMEOUT_MS")); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v >= 0 {
+			relayStreamIdleTimeout = time.Duration(v) * time.Millisecond
 		}
 	}
 }
