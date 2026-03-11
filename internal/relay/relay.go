@@ -378,8 +378,16 @@ func upstreamResponseReadError(err error) error {
 	return fmt.Errorf("upstream response read error: %w", err)
 }
 
+func firstMeaningfulOutputTimeoutError(sec int) error {
+	return fmt.Errorf("first meaningful output timeout (%ds)", sec)
+}
+
 func (ra *relayAttempt) isStreamRequest() bool {
 	return ra != nil && ra.internalRequest != nil && ra.internalRequest.Stream != nil && *ra.internalRequest.Stream
+}
+
+func (ra *relayAttempt) shouldBufferPreludeUntilMeaningfulOutput() bool {
+	return ra != nil && ra.internalRequest != nil && ra.internalRequest.RawAPIFormat == model.APIFormatOpenAIResponse
 }
 
 func (ra *relayAttempt) isPassthroughTerminalEvent(eventType, data string) bool {
@@ -456,6 +464,35 @@ func resetTimer(timer *time.Timer, d time.Duration) {
 	}
 	stopTimer(timer)
 	timer.Reset(d)
+}
+
+func inspectResponsesEvent(data string) (bool, bool) {
+	payload := strings.TrimSpace(data)
+	if payload == "" {
+		return false, false
+	}
+	if payload == "[DONE]" {
+		return false, true
+	}
+
+	var meta struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(payload), &meta); err != nil {
+		log.Warnf("failed to inspect responses event payload: %v", err)
+		return true, false
+	}
+
+	switch meta.Type {
+	case "response.created", "response.in_progress", "response.output_item.added", "response.content_part.added", "response.reasoning_summary_part.added", "response.output_item.done", "response.content_part.done", "response.reasoning_summary_part.done":
+		return false, false
+	case "response.output_text.delta", "response.output_text.done", "response.reasoning_summary_text.delta", "response.reasoning_summary_text.done", "response.reasoning_text.delta", "response.reasoning_text.done", "response.function_call_arguments.delta", "response.function_call_arguments.done", "response.refusal.delta", "response.refusal.done":
+		return true, false
+	case "response.completed", "response.incomplete", "response.failed", "error":
+		return false, true
+	default:
+		return true, false
+	}
 }
 
 // forward 转发请求到上游服务
@@ -581,6 +618,13 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 	firstToken := true
 	sawAnyEvent := false
 	sawTerminalEvent := false
+	bufferPrelude := ra.shouldBufferPreludeUntilMeaningfulOutput()
+	type pendingSSEChunk struct {
+		eventType string
+		data      string
+		encoded   []byte
+	}
+	pendingPrelude := make([]pendingSSEChunk, 0, 4)
 
 	type sseReadResult struct {
 		eventType string
@@ -631,6 +675,34 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		}()
 	}
 
+	writeChunk := func(chunk []byte) {
+		if len(chunk) == 0 {
+			return
+		}
+		if ra.metrics != nil {
+			ra.metrics.AppendClientResponseChunk(chunk)
+		}
+		ra.c.Writer.Write(chunk)
+		ra.c.Writer.Flush()
+	}
+
+	writePassthroughChunk := func(eventType, rawData string, chunk []byte) {
+		if len(chunk) == 0 {
+			return
+		}
+		if rawData != "" {
+			ra.tapStreamForMetrics(ctx, rawData)
+		}
+		writeChunk(chunk)
+	}
+
+	flushPendingPrelude := func() {
+		for _, chunk := range pendingPrelude {
+			writePassthroughChunk(chunk.eventType, chunk.data, chunk.encoded)
+		}
+		pendingPrelude = pendingPrelude[:0]
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -642,9 +714,9 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			_ = response.Body.Close()
 			return upstreamStreamIdleTimeoutError()
 		case <-firstTokenC:
-			log.Warnf("first token timeout (%ds), switching channel", ra.firstTokenTimeOutSec)
+			log.Warnf("first meaningful output timeout (%ds), switching channel", ra.firstTokenTimeOutSec)
 			_ = response.Body.Close()
-			return fmt.Errorf("first token timeout (%ds)", ra.firstTokenTimeOutSec)
+			return firstMeaningfulOutputTimeoutError(ra.firstTokenTimeOutSec)
 		case r, ok := <-results:
 			if !ok {
 				if !sawAnyEvent {
@@ -686,7 +758,6 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 					}
 					continue
 				}
-				ra.tapStreamForMetrics(ctx, r.data)
 				switch ra.internalRequest.RawAPIFormat {
 				case model.APIFormatAnthropicMessage:
 					data = formatSSEEventString(r.eventType, r.data)
@@ -701,11 +772,8 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 						ra.metrics.SetFirstTokenTime(time.Now())
 						firstToken = false
 					}
-					if ra.metrics != nil {
-						ra.metrics.AppendClientResponseChunk(data)
-					}
-					ra.c.Writer.Write(data)
-					ra.c.Writer.Flush()
+					flushPendingPrelude()
+					writePassthroughChunk(r.eventType, r.data, data)
 					_ = response.Body.Close()
 					return nil
 				}
@@ -729,6 +797,17 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				idleC = nil
 			}
 
+			if bufferPrelude && len(data) > 0 && firstToken {
+				meaningfulOutput, terminalChunk := inspectResponsesEvent(r.data)
+				if terminalChunk {
+					terminal = true
+				}
+				if !meaningfulOutput && !terminal {
+					pendingPrelude = append(pendingPrelude, pendingSSEChunk{eventType: r.eventType, data: r.data, encoded: data})
+					continue
+				}
+			}
+
 			if firstToken {
 				ra.metrics.SetFirstTokenTime(time.Now())
 				firstToken = false
@@ -739,11 +818,12 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				}
 			}
 
-			if ra.metrics != nil {
-				ra.metrics.AppendClientResponseChunk(data)
+			flushPendingPrelude()
+			if passthroughSSE {
+				writePassthroughChunk(r.eventType, r.data, data)
+			} else {
+				writeChunk(data)
 			}
-			ra.c.Writer.Write(data)
-			ra.c.Writer.Flush()
 		}
 	}
 }

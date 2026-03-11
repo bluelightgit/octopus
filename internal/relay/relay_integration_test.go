@@ -599,18 +599,15 @@ func TestRelayHandler_StreamEOFBeforeTerminalEvent_Fails(t *testing.T) {
 
 	Handler(inbound.InboundTypeOpenAIResponse, c)
 
-	if w.Code != http.StatusOK {
+	if w.Code != http.StatusBadGateway {
 		t.Fatalf("unexpected status: %d, body: %s", w.Code, w.Body.String())
 	}
 	logItem := lastRelayLog(t, ctx)
 	if !strings.Contains(logItem.Error, "upstream stream ended unexpectedly before terminal event") {
 		t.Fatalf("unexpected relay error: %s", logItem.Error)
 	}
-	if !strings.Contains(w.Body.String(), `response.created`) {
-		t.Fatalf("expected partial streamed body, got %q", w.Body.String())
-	}
-	if !strings.Contains(logItem.ResponseContent, `"response.created"`) {
-		t.Fatalf("expected response content to include streamed event, got %q", logItem.ResponseContent)
+	if logItem.ResponseContent != "" {
+		t.Fatalf("expected buffered prelude to stay hidden, got %q", logItem.ResponseContent)
 	}
 }
 
@@ -691,15 +688,15 @@ func TestRelayHandler_StreamIdleTimeout_Fails(t *testing.T) {
 
 	Handler(inbound.InboundTypeOpenAIResponse, c)
 
-	if w.Code != http.StatusOK {
+	if w.Code != http.StatusBadGateway {
 		t.Fatalf("unexpected status: %d, body: %s", w.Code, w.Body.String())
 	}
 	logItem := lastRelayLog(t, ctx)
 	if !strings.Contains(logItem.Error, "upstream stream idle timeout") {
 		t.Fatalf("unexpected relay error: %s", logItem.Error)
 	}
-	if !strings.Contains(w.Body.String(), `response.created`) {
-		t.Fatalf("expected partial streamed body, got %q", w.Body.String())
+	if logItem.ResponseContent != "" {
+		t.Fatalf("expected buffered prelude to stay hidden, got %q", logItem.ResponseContent)
 	}
 }
 
@@ -740,5 +737,87 @@ func TestRelayHandler_NonStreamTimeout_Fails(t *testing.T) {
 	logItem := lastRelayLog(t, ctx)
 	if !strings.Contains(logItem.Error, "upstream non-stream timeout") {
 		t.Fatalf("unexpected relay error: %s", logItem.Error)
+	}
+}
+
+func TestRelayHandler_ResponsesPreludeTimeout_FallsBackBeforeClientWrite(t *testing.T) {
+	ctx := setupRelayTestEnv(t)
+	apiKey := createRelayTestAPIKey(t, ctx)
+
+	prevIdle := relayStreamIdleTimeout
+	relayStreamIdleTimeout = 80 * time.Millisecond
+	t.Cleanup(func() { relayStreamIdleTimeout = prevIdle })
+
+	requestModel := "responses-prelude-fallback"
+
+	firstCalls := 0
+	firstUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstCalls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_stalled\",\"model\":\"upstream-one\",\"status\":\"in_progress\",\"output\":[]}}\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		time.Sleep(200 * time.Millisecond)
+	}))
+	defer firstUpstream.Close()
+
+	secondCalls := 0
+	secondUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondCalls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_ok\",\"model\":\"upstream-two\",\"status\":\"in_progress\",\"output\":[]}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"hello\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ok\",\"model\":\"upstream-two\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer secondUpstream.Close()
+
+	firstChannel := createRelayTestChannel(t, ctx, "responses-stalled", outbound.OutboundTypeOpenAIResponse, firstUpstream.URL+"/v1")
+	secondChannel := createRelayTestChannel(t, ctx, "responses-good", outbound.OutboundTypeOpenAIResponse, secondUpstream.URL+"/v1")
+
+	group := &dbmodel.Group{Name: requestModel, Mode: dbmodel.GroupModeFailover, PreferredProtocolFamily: dbmodel.GroupProtocolFamilyOpenAIResponses, ProtocolRoutingMode: dbmodel.GroupProtocolRoutingModePreferSameProtocol}
+	if err := op.GroupCreate(group, ctx); err != nil {
+		t.Fatalf("GroupCreate failed: %v", err)
+	}
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{GroupID: group.ID, ChannelID: firstChannel.ID, ModelName: "upstream-one", Priority: 1, Weight: 1}, ctx); err != nil {
+		t.Fatalf("GroupItemAdd failed: %v", err)
+	}
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{GroupID: group.ID, ChannelID: secondChannel.ID, ModelName: "upstream-two", Priority: 2, Weight: 1}, ctx); err != nil {
+		t.Fatalf("GroupItemAdd failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader([]byte(`{"model":"responses-prelude-fallback","stream":true,"input":"hi"}`)))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	c.Set("api_key_id", apiKey.ID)
+
+	Handler(inbound.InboundTypeOpenAIResponse, c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d, body: %s", w.Code, w.Body.String())
+	}
+	if firstCalls != 1 || secondCalls != 1 {
+		t.Fatalf("expected both channels to be attempted once, got first=%d second=%d", firstCalls, secondCalls)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "resp_stalled") {
+		t.Fatalf("unexpected prelude from stalled channel leaked to client: %q", body)
+	}
+	if !strings.Contains(body, "resp_ok") || !strings.Contains(body, "hello") || !strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("expected fallback channel output, got %q", body)
+	}
+	logItem := lastRelayLog(t, ctx)
+	if logItem.Error != "" {
+		t.Fatalf("expected successful relay log, got error %q", logItem.Error)
+	}
+	if logItem.TotalAttempts != 2 {
+		t.Fatalf("expected two attempts, got %d", logItem.TotalAttempts)
 	}
 }
