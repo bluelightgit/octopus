@@ -28,6 +28,13 @@ type RelayMetrics struct {
 
 	// 首 Token 时间
 	FirstTokenTime time.Time
+	// 流阶段观测点
+	UpstreamFirstEventTime time.Time
+	ClientFirstWriteTime   time.Time
+	UpstreamEventCount     int
+	ClientChunkCount       int
+	TerminalSeen           bool
+	FailureStage           string
 
 	// 请求和响应内容
 	InternalRequest  *transformerModel.InternalLLMRequest
@@ -60,7 +67,45 @@ func NewRelayMetrics(apiKeyID int, requestModel string, req *transformerModel.In
 }
 
 func (m *RelayMetrics) SetFirstTokenTime(t time.Time) {
+	if m == nil || !m.FirstTokenTime.IsZero() {
+		return
+	}
 	m.FirstTokenTime = t
+}
+
+func (m *RelayMetrics) RecordUpstreamEvent(t time.Time) {
+	if m == nil {
+		return
+	}
+	m.UpstreamEventCount++
+	if m.UpstreamFirstEventTime.IsZero() {
+		m.UpstreamFirstEventTime = t
+	}
+}
+
+func (m *RelayMetrics) RecordClientChunk(t time.Time, chunk []byte) {
+	if m == nil || len(chunk) == 0 {
+		return
+	}
+	m.ClientChunkCount++
+	if m.ClientFirstWriteTime.IsZero() {
+		m.ClientFirstWriteTime = t
+	}
+	m.AppendClientResponseChunk(chunk)
+}
+
+func (m *RelayMetrics) MarkTerminalSeen() {
+	if m == nil {
+		return
+	}
+	m.TerminalSeen = true
+}
+
+func (m *RelayMetrics) SetFailureStage(stage string) {
+	if m == nil {
+		return
+	}
+	m.FailureStage = stage
 }
 
 func (m *RelayMetrics) SetClientRequestBody(body []byte) {
@@ -222,6 +267,7 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 	if actualModel == "" {
 		actualModel = m.RequestModel
 	}
+	isStreamRequest := m.InternalRequest != nil && m.InternalRequest.Stream != nil && *m.InternalRequest.Stream
 
 	relayLog := model.RelayLog{
 		Time:             m.StartTime.Unix(),
@@ -237,6 +283,26 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 	// 首字时间
 	if !m.FirstTokenTime.IsZero() {
 		relayLog.Ftut = int(m.FirstTokenTime.Sub(m.StartTime).Milliseconds())
+	}
+	if isStreamRequest {
+		if !m.UpstreamFirstEventTime.IsZero() {
+			upstreamFirstEventMs := int(m.UpstreamFirstEventTime.Sub(m.StartTime).Milliseconds())
+			relayLog.UpstreamFirstEventMs = &upstreamFirstEventMs
+		}
+		if !m.ClientFirstWriteTime.IsZero() {
+			clientFirstWriteMs := int(m.ClientFirstWriteTime.Sub(m.StartTime).Milliseconds())
+			relayLog.ClientFirstWriteMs = &clientFirstWriteMs
+		}
+		upstreamEventCount := m.UpstreamEventCount
+		clientChunkCount := m.ClientChunkCount
+		terminalSeen := m.TerminalSeen
+		relayLog.UpstreamEventCount = &upstreamEventCount
+		relayLog.ClientChunkCount = &clientChunkCount
+		relayLog.TerminalSeen = &terminalSeen
+		if err != nil && m.FailureStage != "" {
+			failureStage := m.FailureStage
+			relayLog.FailureStage = &failureStage
+		}
 	}
 
 	// Usage

@@ -650,6 +650,12 @@ func TestRelayHandler_StreamTerminalEvent_Succeeds(t *testing.T) {
 	if logItem.Error != "" {
 		t.Fatalf("expected empty relay error, got %q", logItem.Error)
 	}
+	if logItem.TerminalSeen == nil || !*logItem.TerminalSeen {
+		t.Fatalf("expected terminal seen diagnostic to be true, got %v", logItem.TerminalSeen)
+	}
+	if logItem.FailureStage != nil {
+		t.Fatalf("expected empty failure stage, got %v", logItem.FailureStage)
+	}
 }
 
 func TestRelayHandler_StreamIdleTimeout_Fails(t *testing.T) {
@@ -738,6 +744,9 @@ func TestRelayHandler_NonStreamTimeout_Fails(t *testing.T) {
 	if !strings.Contains(logItem.Error, "upstream non-stream timeout") {
 		t.Fatalf("unexpected relay error: %s", logItem.Error)
 	}
+	if logItem.UpstreamFirstEventMs != nil || logItem.ClientFirstWriteMs != nil || logItem.UpstreamEventCount != nil || logItem.ClientChunkCount != nil || logItem.TerminalSeen != nil || logItem.FailureStage != nil {
+		t.Fatalf("expected non-stream request to omit stream diagnostics, got %+v", logItem)
+	}
 }
 
 func TestRelayHandler_ResponsesPreludeTimeout_FallsBackBeforeClientWrite(t *testing.T) {
@@ -819,5 +828,75 @@ func TestRelayHandler_ResponsesPreludeTimeout_FallsBackBeforeClientWrite(t *test
 	}
 	if logItem.TotalAttempts != 2 {
 		t.Fatalf("expected two attempts, got %d", logItem.TotalAttempts)
+	}
+}
+
+func TestRelayHandler_StreamIdleTimeoutAfterClientWrite_RecordsDiagnostics(t *testing.T) {
+	ctx := setupRelayTestEnv(t)
+	apiKey := createRelayTestAPIKey(t, ctx)
+
+	prevIdle := relayStreamIdleTimeout
+	relayStreamIdleTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { relayStreamIdleTimeout = prevIdle })
+
+	requestModel := "stream-idle-after-client-write"
+	upstreamModel := "stream-idle-after-client-write-upstream"
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"upstream\",\"status\":\"in_progress\",\"output\":[]}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"hello\"}\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		time.Sleep(200 * time.Millisecond)
+	}))
+	defer upstream.Close()
+
+	channel := createRelayTestChannel(t, ctx, "responses-channel", outbound.OutboundTypeOpenAIResponse, upstream.URL+"/v1")
+	createRelayTestGroupItem(t, ctx, requestModel, channel.ID, upstreamModel)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader([]byte(`{"model":"stream-idle-after-client-write","stream":true,"input":"hi"}`)))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	c.Set("api_key_id", apiKey.ID)
+
+	Handler(inbound.InboundTypeOpenAIResponse, c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d, body: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `response.output_text.delta`) {
+		t.Fatalf("expected partial streamed body, got %q", w.Body.String())
+	}
+	logItem := lastRelayLog(t, ctx)
+	if !strings.Contains(logItem.Error, "upstream stream idle timeout") {
+		t.Fatalf("unexpected relay error: %s", logItem.Error)
+	}
+	if logItem.UpstreamFirstEventMs == nil || *logItem.UpstreamFirstEventMs < 0 {
+		t.Fatalf("expected upstream first event timestamp, got %v", logItem.UpstreamFirstEventMs)
+	}
+	if logItem.ClientFirstWriteMs == nil || *logItem.ClientFirstWriteMs < 0 {
+		t.Fatalf("expected client first write timestamp, got %v", logItem.ClientFirstWriteMs)
+	}
+	if logItem.UpstreamEventCount == nil || *logItem.UpstreamEventCount < 2 {
+		t.Fatalf("expected upstream event count >= 2, got %v", logItem.UpstreamEventCount)
+	}
+	if logItem.ClientChunkCount == nil || *logItem.ClientChunkCount < 2 {
+		t.Fatalf("expected client chunk count >= 2, got %v", logItem.ClientChunkCount)
+	}
+	if logItem.TerminalSeen == nil {
+		t.Fatalf("expected terminal seen diagnostic to be present")
+	}
+	if *logItem.TerminalSeen {
+		t.Fatalf("expected terminal seen to be false")
+	}
+	if logItem.FailureStage == nil || *logItem.FailureStage != "stream_idle_timeout" {
+		t.Fatalf("unexpected failure stage: %v", logItem.FailureStage)
 	}
 }

@@ -460,7 +460,17 @@
             "retryDetails": "重试详情",
             "attempts": "次尝试",
             "success": "成功",
-            "failed": "失败"
+            "failed": "失败",
+            "streamDiagnostics": "流式诊断",
+            "upstreamFirstEvent": "首个上游事件",
+            "clientFirstWrite": "首次客户端写出",
+            "upstreamEvents": "上游事件数",
+            "clientChunks": "客户端分块数",
+            "terminalSeen": "是否见到终止事件",
+            "failureStage": "失败阶段",
+            "yes": "是",
+            "no": "否",
+            "notAvailable": "无"
         }
     },
     "channel": {

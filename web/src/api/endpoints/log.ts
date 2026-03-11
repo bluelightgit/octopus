@@ -37,6 +37,12 @@ export interface RelayLog {
     input_tokens: number;        // 输入Token
     output_tokens: number;       // 输出Token
     ftut: number;                // 首字时间(毫秒)
+    upstream_first_event_ms?: number;
+    client_first_write_ms?: number;
+    upstream_event_count?: number;
+    client_chunk_count?: number;
+    terminal_seen?: boolean;
+    failure_stage?: string;
     use_time: number;            // 总用时(毫秒)
     cost: number;                // 消耗费用
     request_content: string;     // 请求内容

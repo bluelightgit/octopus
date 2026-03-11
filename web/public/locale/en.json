@@ -460,7 +460,17 @@
             "retryDetails": "Retry Details",
             "attempts": "attempts",
             "success": "Success",
-            "failed": "Failed"
+            "failed": "Failed",
+            "streamDiagnostics": "Stream Diagnostics",
+            "upstreamFirstEvent": "Upstream First Event",
+            "clientFirstWrite": "Client First Write",
+            "upstreamEvents": "Upstream Events",
+            "clientChunks": "Client Chunks",
+            "terminalSeen": "Terminal Seen",
+            "failureStage": "Failure Stage",
+            "yes": "Yes",
+            "no": "No",
+            "notAvailable": "N/A"
         }
     },
     "channel": {

@@ -680,7 +680,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			return
 		}
 		if ra.metrics != nil {
-			ra.metrics.AppendClientResponseChunk(chunk)
+			ra.metrics.RecordClientChunk(time.Now(), chunk)
 		}
 		ra.c.Writer.Write(chunk)
 		ra.c.Writer.Flush()
@@ -712,19 +712,31 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		case <-idleC:
 			log.Warnf("upstream stream idle timeout after %s", formatRelayTimeout(relayStreamIdleTimeout))
 			_ = response.Body.Close()
+			if ra.metrics != nil {
+				ra.metrics.SetFailureStage("stream_idle_timeout")
+			}
 			return upstreamStreamIdleTimeoutError()
 		case <-firstTokenC:
 			log.Warnf("first meaningful output timeout (%ds), switching channel", ra.firstTokenTimeOutSec)
 			_ = response.Body.Close()
+			if ra.metrics != nil {
+				ra.metrics.SetFailureStage("first_meaningful_output_timeout")
+			}
 			return firstMeaningfulOutputTimeoutError(ra.firstTokenTimeOutSec)
 		case r, ok := <-results:
 			if !ok {
 				if !sawAnyEvent {
 					log.Warnf("upstream stream ended before first event")
+					if ra.metrics != nil {
+						ra.metrics.SetFailureStage("stream_ended_before_first_event")
+					}
 					return upstreamStreamBeforeFirstEventError()
 				}
 				if !sawTerminalEvent {
 					log.Warnf("upstream stream ended unexpectedly before terminal event")
+					if ra.metrics != nil {
+						ra.metrics.SetFailureStage("stream_unexpected_eof_before_terminal")
+					}
 					return upstreamStreamUnexpectedEOFError()
 				}
 				log.Infof("stream end after terminal event")
@@ -733,10 +745,16 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			if r.err != nil {
 				log.Warnf("failed to read event: %v", r.err)
 				_ = response.Body.Close()
+				if ra.metrics != nil {
+					ra.metrics.SetFailureStage("stream_read_error")
+				}
 				return upstreamStreamReadError(r.err)
 			}
 
 			sawAnyEvent = true
+			if ra.metrics != nil {
+				ra.metrics.RecordUpstreamEvent(time.Now())
+			}
 			if idleTimer != nil && !sawTerminalEvent {
 				resetTimer(idleTimer, relayStreamIdleTimeout)
 			}
@@ -752,6 +770,9 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				if r.data == "" {
 					if terminal {
 						sawTerminalEvent = true
+						if ra.metrics != nil {
+							ra.metrics.MarkTerminalSeen()
+						}
 						stopTimer(idleTimer)
 						idleTimer = nil
 						idleC = nil
@@ -768,6 +789,9 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				// Stop early once the upstream signals completion.
 				if strings.TrimSpace(r.data) == "[DONE]" {
 					sawTerminalEvent = true
+					if ra.metrics != nil {
+						ra.metrics.MarkTerminalSeen()
+					}
 					if firstToken {
 						ra.metrics.SetFirstTokenTime(time.Now())
 						firstToken = false
@@ -782,6 +806,9 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				if err != nil || len(data) == 0 {
 					if terminal {
 						sawTerminalEvent = true
+						if ra.metrics != nil {
+							ra.metrics.MarkTerminalSeen()
+						}
 						stopTimer(idleTimer)
 						idleTimer = nil
 						idleC = nil
@@ -792,6 +819,9 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 
 			if terminal {
 				sawTerminalEvent = true
+				if ra.metrics != nil {
+					ra.metrics.MarkTerminalSeen()
+				}
 				stopTimer(idleTimer)
 				idleTimer = nil
 				idleC = nil
