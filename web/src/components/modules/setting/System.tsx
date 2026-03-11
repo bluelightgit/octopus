@@ -16,49 +16,90 @@ export function SettingSystem() {
 
     const [proxyUrl, setProxyUrl] = useState('');
     const [statsSaveInterval, setStatsSaveInterval] = useState('');
+    const [relayUpstreamHeaderTimeout, setRelayUpstreamHeaderTimeout] = useState('');
+    const [relayNonStreamTimeout, setRelayNonStreamTimeout] = useState('');
+    const [relayStreamIdleTimeout, setRelayStreamIdleTimeout] = useState('');
+    const [relayResponsesPreludeTimeout, setRelayResponsesPreludeTimeout] = useState('');
     const [corsAllowOrigins, setCorsAllowOrigins] = useState('');
     const [corsInputValue, setCorsInputValue] = useState('');
 
-    const initialProxyUrl = useRef('');
-    const initialStatsSaveInterval = useRef('');
-    const initialCorsAllowOrigins = useRef('');
+    const initialValues = useRef<Record<string, string>>({});
 
     useEffect(() => {
-        if (settings) {
-            const proxy = settings.find(s => s.key === SettingKey.ProxyURL);
-            const interval = settings.find(s => s.key === SettingKey.StatsSaveInterval);
-            const cors = settings.find(s => s.key === SettingKey.CORSAllowOrigins);
-            if (proxy) {
-                queueMicrotask(() => setProxyUrl(proxy.value));
-                initialProxyUrl.current = proxy.value;
-            }
-            if (interval) {
-                queueMicrotask(() => setStatsSaveInterval(interval.value));
-                initialStatsSaveInterval.current = interval.value;
-            }
-            if (cors) {
-                queueMicrotask(() => setCorsAllowOrigins(cors.value));
-                initialCorsAllowOrigins.current = cors.value;
-            }
-        }
+        if (!settings) return;
+
+        const getSettingValue = (key: string) => settings.find(s => s.key === key)?.value ?? '';
+
+        const nextProxyUrl = getSettingValue(SettingKey.ProxyURL);
+        const nextStatsSaveInterval = getSettingValue(SettingKey.StatsSaveInterval);
+        const nextRelayUpstreamHeaderTimeout = getSettingValue(SettingKey.RelayUpstreamHeaderTimeout);
+        const nextRelayNonStreamTimeout = getSettingValue(SettingKey.RelayNonStreamTimeout);
+        const nextRelayStreamIdleTimeout = getSettingValue(SettingKey.RelayStreamIdleTimeout);
+        const nextRelayResponsesPreludeTimeout = getSettingValue(SettingKey.RelayResponsesPreludeTimeout);
+        const nextCorsAllowOrigins = getSettingValue(SettingKey.CORSAllowOrigins);
+
+        queueMicrotask(() => {
+            setProxyUrl(nextProxyUrl);
+            setStatsSaveInterval(nextStatsSaveInterval);
+            setRelayUpstreamHeaderTimeout(nextRelayUpstreamHeaderTimeout);
+            setRelayNonStreamTimeout(nextRelayNonStreamTimeout);
+            setRelayStreamIdleTimeout(nextRelayStreamIdleTimeout);
+            setRelayResponsesPreludeTimeout(nextRelayResponsesPreludeTimeout);
+            setCorsAllowOrigins(nextCorsAllowOrigins);
+        });
+
+        initialValues.current[SettingKey.ProxyURL] = nextProxyUrl;
+        initialValues.current[SettingKey.StatsSaveInterval] = nextStatsSaveInterval;
+        initialValues.current[SettingKey.RelayUpstreamHeaderTimeout] = nextRelayUpstreamHeaderTimeout;
+        initialValues.current[SettingKey.RelayNonStreamTimeout] = nextRelayNonStreamTimeout;
+        initialValues.current[SettingKey.RelayStreamIdleTimeout] = nextRelayStreamIdleTimeout;
+        initialValues.current[SettingKey.RelayResponsesPreludeTimeout] = nextRelayResponsesPreludeTimeout;
+        initialValues.current[SettingKey.CORSAllowOrigins] = nextCorsAllowOrigins;
     }, [settings]);
 
-    const handleSave = (key: string, value: string, initialValue: string) => {
+    const handleSave = (key: string, value: string) => {
+        const initialValue = initialValues.current[key] ?? '';
         if (value === initialValue) return;
 
         setSetting.mutate({ key, value }, {
             onSuccess: () => {
                 toast.success(t('saved'));
-                if (key === SettingKey.ProxyURL) {
-                    initialProxyUrl.current = value;
-                } else if (key === SettingKey.StatsSaveInterval) {
-                    initialStatsSaveInterval.current = value;
-                } else if (key === SettingKey.CORSAllowOrigins) {
-                    initialCorsAllowOrigins.current = value;
-                }
+                initialValues.current[key] = value;
             }
         });
     };
+
+    const relayTimeoutFields = [
+        {
+            key: SettingKey.RelayUpstreamHeaderTimeout,
+            label: t('relayUpstreamHeaderTimeout.label'),
+            placeholder: t('relayUpstreamHeaderTimeout.placeholder'),
+            value: relayUpstreamHeaderTimeout,
+            setValue: setRelayUpstreamHeaderTimeout,
+        },
+        {
+            key: SettingKey.RelayNonStreamTimeout,
+            label: t('relayNonStreamTimeout.label'),
+            placeholder: t('relayNonStreamTimeout.placeholder'),
+            value: relayNonStreamTimeout,
+            setValue: setRelayNonStreamTimeout,
+        },
+        {
+            key: SettingKey.RelayStreamIdleTimeout,
+            label: t('relayStreamIdleTimeout.label'),
+            placeholder: t('relayStreamIdleTimeout.placeholder'),
+            value: relayStreamIdleTimeout,
+            setValue: setRelayStreamIdleTimeout,
+        },
+        {
+            key: SettingKey.RelayResponsesPreludeTimeout,
+            label: t('relayResponsesPreludeTimeout.label'),
+            placeholder: t('relayResponsesPreludeTimeout.placeholder'),
+            hint: t('relayResponsesPreludeTimeout.hint'),
+            value: relayResponsesPreludeTimeout,
+            setValue: setRelayResponsesPreludeTimeout,
+        },
+    ];
 
     const corsAllowOriginsList = useMemo(() => {
         const value = corsAllowOrigins.trim();
@@ -85,7 +126,7 @@ export function SettingSystem() {
         ));
         const normalizedValue = normalizedOrigins.includes('*') ? '*' : normalizedOrigins.join(',');
         setCorsAllowOrigins(normalizedValue);
-        handleSave(SettingKey.CORSAllowOrigins, normalizedValue, initialCorsAllowOrigins.current);
+        handleSave(SettingKey.CORSAllowOrigins, normalizedValue);
     };
 
     const handleAddCorsOrigin = () => {
@@ -130,7 +171,7 @@ export function SettingSystem() {
                 <Input
                     value={proxyUrl}
                     onChange={(e) => setProxyUrl(e.target.value)}
-                    onBlur={() => handleSave('proxy_url', proxyUrl, initialProxyUrl.current)}
+                    onBlur={() => handleSave(SettingKey.ProxyURL, proxyUrl)}
                     placeholder={t('proxyUrl.placeholder')}
                     className="w-48 rounded-xl"
                 />
@@ -146,11 +187,40 @@ export function SettingSystem() {
                     type="number"
                     value={statsSaveInterval}
                     onChange={(e) => setStatsSaveInterval(e.target.value)}
-                    onBlur={() => handleSave('stats_save_interval', statsSaveInterval, initialStatsSaveInterval.current)}
+                    onBlur={() => handleSave(SettingKey.StatsSaveInterval, statsSaveInterval)}
                     placeholder={t('statsSaveInterval.placeholder')}
                     className="w-48 rounded-xl"
                 />
             </div>
+
+            {relayTimeoutFields.map((field) => (
+                <div key={field.key} className="flex items-center justify-between gap-4">
+                    <div className="flex items-center gap-3">
+                        <Clock className="h-5 w-5 text-muted-foreground" />
+                        <span className="text-sm font-medium">{field.label}</span>
+                        {field.hint && (
+                            <TooltipProvider>
+                                <Tooltip>
+                                    <TooltipTrigger asChild>
+                                        <HelpCircle className="size-4 cursor-help text-muted-foreground" />
+                                    </TooltipTrigger>
+                                    <TooltipContent>
+                                        {field.hint}
+                                    </TooltipContent>
+                                </Tooltip>
+                            </TooltipProvider>
+                        )}
+                    </div>
+                    <Input
+                        type="number"
+                        value={field.value}
+                        onChange={(e) => field.setValue(e.target.value)}
+                        onBlur={() => handleSave(field.key, field.value)}
+                        placeholder={field.placeholder}
+                        className="w-48 rounded-xl"
+                    />
+                </div>
+            ))}
 
             {/* CORS 跨域白名单 */}
             <div className="flex items-center justify-between gap-4">
@@ -219,3 +289,4 @@ export function SettingSystem() {
         </div>
     );
 }
+

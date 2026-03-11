@@ -3,22 +3,30 @@ package model
 import (
 	"fmt"
 	"net/url"
+	"os"
 	"strconv"
+	"strings"
+
+	"github.com/bestruirui/octopus/internal/conf"
 )
 
 type SettingKey string
 
 const (
-	SettingKeyProxyURL                  SettingKey = "proxy_url"
-	SettingKeyStatsSaveInterval         SettingKey = "stats_save_interval"          // 将统计信息写入数据库的周期(分钟)
-	SettingKeyModelInfoUpdateInterval   SettingKey = "model_info_update_interval"   // 模型信息更新间隔(小时)
-	SettingKeySyncLLMInterval           SettingKey = "sync_llm_interval"            // LLM 同步间隔(小时)
-	SettingKeyRelayLogKeepPeriod        SettingKey = "relay_log_keep_period"        // 日志保存时间范围(天)
-	SettingKeyRelayLogKeepEnabled       SettingKey = "relay_log_keep_enabled"       // 是否保留历史日志
-	SettingKeyCORSAllowOrigins          SettingKey = "cors_allow_origins"           // 跨域白名单(逗号分隔, 如 "example.com,example2.com"). 为空不允许跨域, "*"允许所有
-	SettingKeyCircuitBreakerThreshold   SettingKey = "circuit_breaker_threshold"    // 熔断触发阈值（连续失败次数）
-	SettingKeyCircuitBreakerCooldown    SettingKey = "circuit_breaker_cooldown"     // 熔断基础冷却时间（秒）
-	SettingKeyCircuitBreakerMaxCooldown SettingKey = "circuit_breaker_max_cooldown" // 熔断最大冷却时间（秒），指数退避上限
+	SettingKeyProxyURL                       SettingKey = "proxy_url"
+	SettingKeyStatsSaveInterval              SettingKey = "stats_save_interval"                // 将统计信息写入数据库的周期(分钟)
+	SettingKeyModelInfoUpdateInterval        SettingKey = "model_info_update_interval"         // 模型信息更新间隔(小时)
+	SettingKeySyncLLMInterval                SettingKey = "sync_llm_interval"                  // LLM 同步间隔(小时)
+	SettingKeyRelayLogKeepPeriod             SettingKey = "relay_log_keep_period"              // 日志保存时间范围(天)
+	SettingKeyRelayLogKeepEnabled            SettingKey = "relay_log_keep_enabled"             // 是否保留历史日志
+	SettingKeyCORSAllowOrigins               SettingKey = "cors_allow_origins"                 // 跨域白名单(逗号分隔, 如 "example.com,example2.com"). 为空不允许跨域, "*"允许所有
+	SettingKeyCircuitBreakerThreshold        SettingKey = "circuit_breaker_threshold"          // 熔断触发阈值（连续失败次数）
+	SettingKeyCircuitBreakerCooldown         SettingKey = "circuit_breaker_cooldown"           // 熔断基础冷却时间（秒）
+	SettingKeyCircuitBreakerMaxCooldown      SettingKey = "circuit_breaker_max_cooldown"       // 熔断最大冷却时间（秒），指数退避上限
+	SettingKeyRelayUpstreamHeaderTimeoutMS   SettingKey = "relay_upstream_header_timeout_ms"   // Relay 上游响应头超时（毫秒）
+	SettingKeyRelayNonStreamTimeoutMS        SettingKey = "relay_non_stream_timeout_ms"        // Relay 非流式请求总超时（毫秒）
+	SettingKeyRelayStreamIdleTimeoutMS       SettingKey = "relay_stream_idle_timeout_ms"       // Relay 流式请求空闲超时（毫秒）
+	SettingKeyRelayResponsesPreludeTimeoutMS SettingKey = "relay_responses_prelude_timeout_ms" // Relay Responses prelude 兜底超时（毫秒）
 )
 
 type Setting struct {
@@ -38,7 +46,21 @@ func DefaultSettings() []Setting {
 		{Key: SettingKeyCircuitBreakerThreshold, Value: "5"},     // 默认连续失败5次触发熔断
 		{Key: SettingKeyCircuitBreakerCooldown, Value: "60"},     // 默认基础冷却60秒
 		{Key: SettingKeyCircuitBreakerMaxCooldown, Value: "600"}, // 默认最大冷却600秒（10分钟）
+		{Key: SettingKeyRelayUpstreamHeaderTimeoutMS, Value: defaultEnvIntString("RELAY_UPSTREAM_HEADER_TIMEOUT_MS", 30000)},
+		{Key: SettingKeyRelayNonStreamTimeoutMS, Value: defaultEnvIntString("RELAY_NON_STREAM_TIMEOUT_MS", 300000)},
+		{Key: SettingKeyRelayStreamIdleTimeoutMS, Value: defaultEnvIntString("RELAY_STREAM_IDLE_TIMEOUT_MS", 90000)},
+		{Key: SettingKeyRelayResponsesPreludeTimeoutMS, Value: defaultEnvIntString("RELAY_RESPONSES_PRELUDE_TIMEOUT_MS", 30000)},
 	}
+}
+
+func defaultEnvIntString(suffix string, fallback int) string {
+	envName := strings.ToUpper(conf.APP_NAME) + "_" + suffix
+	if raw := strings.TrimSpace(os.Getenv(envName)); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v >= 0 {
+			return strconv.Itoa(v)
+		}
+	}
+	return strconv.Itoa(fallback)
 }
 
 func (s *Setting) Validate() error {
@@ -48,6 +70,16 @@ func (s *Setting) Validate() error {
 		_, err := strconv.Atoi(s.Value)
 		if err != nil {
 			return fmt.Errorf("model info update interval must be an integer")
+		}
+		return nil
+	case SettingKeyRelayUpstreamHeaderTimeoutMS, SettingKeyRelayNonStreamTimeoutMS,
+		SettingKeyRelayStreamIdleTimeoutMS, SettingKeyRelayResponsesPreludeTimeoutMS:
+		v, err := strconv.Atoi(s.Value)
+		if err != nil {
+			return fmt.Errorf("relay timeout must be an integer")
+		}
+		if v < 0 {
+			return fmt.Errorf("relay timeout must be greater than or equal to 0")
 		}
 		return nil
 	case SettingKeyRelayLogKeepEnabled:

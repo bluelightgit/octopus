@@ -942,6 +942,25 @@ func (i *MessagesInbound) TransformStream(ctx context.Context, stream *model.Int
 	return result, nil
 }
 
+func (i *MessagesInbound) EmitStreamFailure(ctx context.Context, cause error) ([]byte, error) {
+	msg := "upstream stream failed"
+	if cause != nil && cause.Error() != "" {
+		msg = cause.Error()
+	}
+	payload := AnthropicError{
+		Type: "error",
+		Error: ErrorDetail{
+			Type:    "api_error",
+			Message: msg,
+		},
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal error event: %w", err)
+	}
+	return formatSSEEvent("error", data), nil
+}
+
 func (i *MessagesInbound) convertUsage(usage *model.Usage) *Usage {
 	anthropicUsage := &Usage{
 		InputTokens:  usage.PromptTokens,

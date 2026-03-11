@@ -173,6 +173,7 @@ http://localhost:3000
 | `OCTOPUS_RELAY_UPSTREAM_HEADER_TIMEOUT_MS` | Relay 上游响应头超时，默认 30000ms |
 | `OCTOPUS_RELAY_NON_STREAM_TIMEOUT_MS` | Relay 非流式请求总超时，默认 300000ms |
 | `OCTOPUS_RELAY_STREAM_IDLE_TIMEOUT_MS` | Relay 流式请求事件空闲超时，默认 90000ms |
+| `OCTOPUS_RELAY_RESPONSES_PRELUDE_TIMEOUT_MS` | OpenAI Responses 同协议透传且仅收到前导事件时的兜底超时；仅在分组首 token 超时未设置时生效，默认 30000ms |
 
 
 ## 📸 界面预览

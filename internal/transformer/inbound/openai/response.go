@@ -50,6 +50,7 @@ type ResponseInbound struct {
 	// Terminal response event tracking
 	finalResponseStatus    string
 	finalResponseEventType string
+	finalResponseError     *ResponsesError
 
 	// Stream chunks storage for aggregation
 	streamChunks []*model.InternalLLMResponse
@@ -336,12 +337,36 @@ func (i *ResponseInbound) emitResponseTerminalEvent() []byte {
 		Status:    &status,
 		Output:    []ResponsesItem{},
 		Usage:     convertUsageToResponses(i.usage),
+		Error:     i.finalResponseError,
 	}
 
 	return i.enqueueEvent(&ResponsesStreamEvent{
 		Type:     eventType,
 		Response: response,
 	})
+}
+
+func (i *ResponseInbound) EmitStreamFailure(ctx context.Context, cause error) ([]byte, error) {
+	if cause != nil {
+		i.finalResponseError = &ResponsesError{Code: 502, Message: cause.Error()}
+	}
+
+	finishReason := "error"
+	chunk, err := i.TransformStream(ctx, &model.InternalLLMResponse{
+		Object: "chat.completion.chunk",
+		Choices: []model.Choice{{
+			Index:        0,
+			FinishReason: &finishReason,
+		}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	done, err := i.TransformStream(ctx, &model.InternalLLMResponse{Object: "[DONE]"})
+	if err != nil {
+		return nil, err
+	}
+	return append(chunk, done...), nil
 }
 
 func (i *ResponseInbound) handleReasoningContent(content *string) [][]byte {

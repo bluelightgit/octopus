@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"github.com/bestruirui/octopus/internal/client"
 	"github.com/bestruirui/octopus/internal/conf"
 	"github.com/bestruirui/octopus/internal/db"
 	"github.com/bestruirui/octopus/internal/op"
+	"github.com/bestruirui/octopus/internal/relay"
 	"github.com/bestruirui/octopus/internal/server"
 	"github.com/bestruirui/octopus/internal/task"
 	"github.com/bestruirui/octopus/internal/utils/log"
@@ -34,6 +36,8 @@ var startCmd = &cobra.Command{
 			log.Errorf("cache init error: %v", err)
 			return
 		}
+		client.ReloadRuntimeSettings()
+		relay.ReloadRuntimeSettings()
 		shutdown.Register(op.SaveCache)
 
 		if err := op.UserInit(); err != nil {

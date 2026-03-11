@@ -163,6 +163,23 @@
             "label": "Stats Save Interval",
             "placeholder": "Enter interval in minutes"
         },
+        "relayUpstreamHeaderTimeout": {
+            "label": "Upstream Header Timeout (ms)",
+            "placeholder": "Enter timeout in milliseconds"
+        },
+        "relayNonStreamTimeout": {
+            "label": "Non-stream Total Timeout (ms)",
+            "placeholder": "Enter timeout in milliseconds"
+        },
+        "relayStreamIdleTimeout": {
+            "label": "Stream Idle Timeout (ms)",
+            "placeholder": "Enter timeout in milliseconds"
+        },
+        "relayResponsesPreludeTimeout": {
+            "label": "Responses Prelude Fallback Timeout (ms)",
+            "placeholder": "Enter timeout in milliseconds",
+            "hint": "Only applies when the group first token timeout is unset; 0 disables"
+        },
         "corsAllowOrigins": {
             "label": "CORS Allowed Origins",
             "hint": "Empty = deny all, * = allow all",
@@ -570,3 +587,4 @@
         }
     }
 }
+

@@ -8,8 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bestruirui/octopus/internal/client"
 	"github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
+	"github.com/bestruirui/octopus/internal/relay"
 	"github.com/bestruirui/octopus/internal/server/middleware"
 	"github.com/bestruirui/octopus/internal/server/resp"
 	"github.com/bestruirui/octopus/internal/server/router"
@@ -62,6 +64,8 @@ func setSetting(c *gin.Context) {
 		resp.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+	client.ReloadRuntimeSettings()
+	relay.ReloadRuntimeSettings()
 	switch setting.Key {
 	case model.SettingKeyModelInfoUpdateInterval:
 		hours, err := strconv.Atoi(setting.Value)
@@ -140,6 +144,8 @@ func importDB(c *gin.Context) {
 	}
 
 	_ = op.InitCache()
+	client.ReloadRuntimeSettings()
+	relay.ReloadRuntimeSettings()
 
 	resp.Success(c, result)
 }

@@ -249,6 +249,10 @@ func mergeAttempts(primaryIter, fallbackIter, activeIter *balancer.Iterator) []d
 	return attempts
 }
 
+type streamFailureEmitter interface {
+	EmitStreamFailure(ctx context.Context, cause error) ([]byte, error)
+}
+
 // attempt 统一管理一次通道尝试的完整生命周期
 func (ra *relayAttempt) attempt() attemptResult {
 	span := ra.iter.StartAttempt(ra.channel.ID, ra.usedKey.ID, ra.channel.Name)
@@ -297,6 +301,7 @@ func (ra *relayAttempt) attempt() attemptResult {
 
 	written := ra.c.Writer.Written()
 	if written {
+		ra.emitStreamFailureTrailer(ra.c.Request.Context(), fwdErr)
 		ra.collectResponse()
 	}
 	return attemptResult{
@@ -304,6 +309,36 @@ func (ra *relayAttempt) attempt() attemptResult {
 		Written: written,
 		Err:     fmt.Errorf("channel %s failed: %w", ra.channel.Name, fwdErr),
 	}
+}
+
+func (ra *relayAttempt) emitStreamFailureTrailer(ctx context.Context, cause error) {
+	if ra == nil || cause == nil || !ra.isStreamRequest() || ra.inAdapter == nil {
+		return
+	}
+	if ra.metrics != nil {
+		if ra.metrics.ClientChunkCount == 0 || ra.metrics.TerminalSeen {
+			return
+		}
+	}
+
+	emitter, ok := ra.inAdapter.(streamFailureEmitter)
+	if !ok {
+		return
+	}
+
+	chunk, err := emitter.EmitStreamFailure(ctx, cause)
+	if err != nil {
+		log.Warnf("failed to emit stream failure trailer: %v", err)
+		return
+	}
+	if len(chunk) == 0 {
+		return
+	}
+	if ra.metrics != nil {
+		ra.metrics.RecordClientChunk(time.Now(), chunk)
+	}
+	_, _ = ra.c.Writer.Write(chunk)
+	ra.c.Writer.Flush()
 }
 
 // parseRequest 解析并验证入站请求
@@ -379,7 +414,18 @@ func upstreamResponseReadError(err error) error {
 }
 
 func firstMeaningfulOutputTimeoutError(sec int) error {
-	return fmt.Errorf("first meaningful output timeout (%ds)", sec)
+	timeout := time.Duration(sec) * time.Second
+	if timeout > 0 {
+		return firstMeaningfulOutputTimeoutDurationError(timeout)
+	}
+	return fmt.Errorf("first meaningful output timeout")
+}
+
+func firstMeaningfulOutputTimeoutDurationError(timeout time.Duration) error {
+	if timeout > 0 && timeout%time.Second == 0 {
+		return fmt.Errorf("first meaningful output timeout (%ds)", int(timeout/time.Second))
+	}
+	return fmt.Errorf("first meaningful output timeout after %s", formatRelayTimeout(timeout))
 }
 
 func (ra *relayAttempt) isStreamRequest() bool {
@@ -388,6 +434,19 @@ func (ra *relayAttempt) isStreamRequest() bool {
 
 func (ra *relayAttempt) shouldBufferPreludeUntilMeaningfulOutput() bool {
 	return ra != nil && ra.internalRequest != nil && ra.internalRequest.RawAPIFormat == model.APIFormatOpenAIResponse
+}
+
+func (ra *relayAttempt) effectiveFirstMeaningfulOutputTimeout() time.Duration {
+	if ra == nil {
+		return 0
+	}
+	if ra.firstTokenTimeOutSec > 0 {
+		return time.Duration(ra.firstTokenTimeOutSec) * time.Second
+	}
+	if ra.shouldBufferPreludeUntilMeaningfulOutput() && ra.shouldPassthroughSSE() && relayResponsesPreludeTimeout > 0 {
+		return relayResponsesPreludeTimeout
+	}
+	return 0
 }
 
 func (ra *relayAttempt) isPassthroughTerminalEvent(eventType, data string) bool {
@@ -655,10 +714,11 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		}
 	}()
 
+	firstMeaningfulOutputTimeout := ra.effectiveFirstMeaningfulOutputTimeout()
 	var firstTokenTimer *time.Timer
 	var firstTokenC <-chan time.Time
-	if firstToken && ra.firstTokenTimeOutSec > 0 {
-		firstTokenTimer = time.NewTimer(time.Duration(ra.firstTokenTimeOutSec) * time.Second)
+	if firstToken && firstMeaningfulOutputTimeout > 0 {
+		firstTokenTimer = time.NewTimer(firstMeaningfulOutputTimeout)
 		firstTokenC = firstTokenTimer.C
 		defer func() {
 			stopTimer(firstTokenTimer)
@@ -717,12 +777,12 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			}
 			return upstreamStreamIdleTimeoutError()
 		case <-firstTokenC:
-			log.Warnf("first meaningful output timeout (%ds), switching channel", ra.firstTokenTimeOutSec)
+			log.Warnf("first meaningful output timeout after %s, switching channel", formatRelayTimeout(firstMeaningfulOutputTimeout))
 			_ = response.Body.Close()
 			if ra.metrics != nil {
 				ra.metrics.SetFailureStage("first_meaningful_output_timeout")
 			}
-			return firstMeaningfulOutputTimeoutError(ra.firstTokenTimeOutSec)
+			return firstMeaningfulOutputTimeoutDurationError(firstMeaningfulOutputTimeout)
 		case r, ok := <-results:
 			if !ok {
 				if !sawAnyEvent {

@@ -198,6 +198,25 @@ func (i *CompletionsInbound) TransformStream(ctx context.Context, stream *model.
 	return []byte("data: " + string(b) + "\n\n"), nil
 }
 
+func (i *CompletionsInbound) EmitStreamFailure(ctx context.Context, cause error) ([]byte, error) {
+	finishReason := "error"
+	chunk, err := i.TransformStream(ctx, &model.InternalLLMResponse{
+		Object: "chat.completion.chunk",
+		Choices: []model.Choice{{
+			Index:        0,
+			FinishReason: &finishReason,
+		}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	done, err := i.TransformStream(ctx, &model.InternalLLMResponse{Object: "[DONE]"})
+	if err != nil {
+		return nil, err
+	}
+	return append(chunk, done...), nil
+}
+
 func (i *CompletionsInbound) GetInternalResponse(ctx context.Context) (*model.InternalLLMResponse, error) {
 	if i.storedResponse != nil {
 		return i.storedResponse, nil

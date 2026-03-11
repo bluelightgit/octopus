@@ -163,6 +163,23 @@
             "label": "統計保存週期（分鐘）",
             "placeholder": "請輸入週期（分鐘）"
         },
+        "relayUpstreamHeaderTimeout": {
+            "label": "上游響應頭逾時（毫秒）",
+            "placeholder": "請輸入逾時時間（毫秒）"
+        },
+        "relayNonStreamTimeout": {
+            "label": "非串流總逾時（毫秒）",
+            "placeholder": "請輸入逾時時間（毫秒）"
+        },
+        "relayStreamIdleTimeout": {
+            "label": "串流空閒逾時（毫秒）",
+            "placeholder": "請輸入逾時時間（毫秒）"
+        },
+        "relayResponsesPreludeTimeout": {
+            "label": "Responses prelude 兜底逾時（毫秒）",
+            "placeholder": "請輸入逾時時間（毫秒）",
+            "hint": "僅在分組首 token 逾時未設定時生效，0 表示停用"
+        },
         "corsAllowOrigins": {
             "label": "CORS 跨網域白名單",
             "hint": "為空禁止跨網域，* 允許所有",
@@ -570,3 +587,4 @@
         }
     }
 }
+

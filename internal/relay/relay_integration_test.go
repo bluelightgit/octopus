@@ -831,6 +831,98 @@ func TestRelayHandler_ResponsesPreludeTimeout_FallsBackBeforeClientWrite(t *test
 	}
 }
 
+func TestRelayHandler_ResponsesPreludeTimeout_FallsBackWithDefaultGuardWhenGroupTimeoutDisabled(t *testing.T) {
+	ctx := setupRelayTestEnv(t)
+	apiKey := createRelayTestAPIKey(t, ctx)
+
+	prevIdle := relayStreamIdleTimeout
+	relayStreamIdleTimeout = 120 * time.Millisecond
+	t.Cleanup(func() { relayStreamIdleTimeout = prevIdle })
+
+	prevPrelude := relayResponsesPreludeTimeout
+	relayResponsesPreludeTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { relayResponsesPreludeTimeout = prevPrelude })
+
+	requestModel := "responses-prelude-default-guard"
+
+	firstCalls := 0
+	firstUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstCalls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		for i := 0; i < 6; i++ {
+			_, _ = w.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_stalled\",\"model\":\"upstream-one\",\"status\":\"in_progress\",\"output\":[]}}\n\n"))
+			if flusher != nil {
+				flusher.Flush()
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		time.Sleep(120 * time.Millisecond)
+	}))
+	defer firstUpstream.Close()
+
+	secondCalls := 0
+	secondUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondCalls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_ok\",\"model\":\"upstream-two\",\"status\":\"in_progress\",\"output\":[]}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"hello\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ok\",\"model\":\"upstream-two\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer secondUpstream.Close()
+
+	firstChannel := createRelayTestChannel(t, ctx, "responses-stalled-default-guard", outbound.OutboundTypeOpenAIResponse, firstUpstream.URL+"/v1")
+	secondChannel := createRelayTestChannel(t, ctx, "responses-good-default-guard", outbound.OutboundTypeOpenAIResponse, secondUpstream.URL+"/v1")
+
+	group := &dbmodel.Group{Name: requestModel, Mode: dbmodel.GroupModeFailover, PreferredProtocolFamily: dbmodel.GroupProtocolFamilyOpenAIResponses, ProtocolRoutingMode: dbmodel.GroupProtocolRoutingModePreferSameProtocol}
+	if err := op.GroupCreate(group, ctx); err != nil {
+		t.Fatalf("GroupCreate failed: %v", err)
+	}
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{GroupID: group.ID, ChannelID: firstChannel.ID, ModelName: "upstream-one", Priority: 1, Weight: 1}, ctx); err != nil {
+		t.Fatalf("GroupItemAdd failed: %v", err)
+	}
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{GroupID: group.ID, ChannelID: secondChannel.ID, ModelName: "upstream-two", Priority: 2, Weight: 1}, ctx); err != nil {
+		t.Fatalf("GroupItemAdd failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader([]byte(`{"model":"responses-prelude-default-guard","stream":true,"input":"hi"}`)))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	c.Set("api_key_id", apiKey.ID)
+
+	Handler(inbound.InboundTypeOpenAIResponse, c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d, body: %s", w.Code, w.Body.String())
+	}
+	if firstCalls != 1 || secondCalls != 1 {
+		t.Fatalf("expected both channels to be attempted once, got first=%d second=%d", firstCalls, secondCalls)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "resp_stalled") {
+		t.Fatalf("unexpected prelude from stalled channel leaked to client: %q", body)
+	}
+	if !strings.Contains(body, "resp_ok") || !strings.Contains(body, "hello") || !strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("expected fallback channel output, got %q", body)
+	}
+	logItem := lastRelayLog(t, ctx)
+	if logItem.Error != "" {
+		t.Fatalf("expected successful relay log, got error %q", logItem.Error)
+	}
+	if logItem.TotalAttempts != 2 {
+		t.Fatalf("expected two attempts, got %d", logItem.TotalAttempts)
+	}
+	if len(logItem.Attempts) == 0 || !strings.Contains(logItem.Attempts[0].Msg, "first meaningful output timeout after 50ms") {
+		t.Fatalf("expected first attempt timeout guard message, got %+v", logItem.Attempts)
+	}
+}
+
 func TestRelayHandler_StreamIdleTimeoutAfterClientWrite_RecordsDiagnostics(t *testing.T) {
 	ctx := setupRelayTestEnv(t)
 	apiKey := createRelayTestAPIKey(t, ctx)
@@ -874,6 +966,15 @@ func TestRelayHandler_StreamIdleTimeoutAfterClientWrite_RecordsDiagnostics(t *te
 	if !strings.Contains(w.Body.String(), `response.output_text.delta`) {
 		t.Fatalf("expected partial streamed body, got %q", w.Body.String())
 	}
+	if !strings.Contains(w.Body.String(), `response.failed`) {
+		t.Fatalf("expected synthetic failure trailer, got %q", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `data: [DONE]`) {
+		t.Fatalf("expected done marker after failure trailer, got %q", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"message":"upstream stream idle timeout after 50ms"`) {
+		t.Fatalf("expected failure message in trailer, got %q", w.Body.String())
+	}
 	logItem := lastRelayLog(t, ctx)
 	if !strings.Contains(logItem.Error, "upstream stream idle timeout") {
 		t.Fatalf("unexpected relay error: %s", logItem.Error)
@@ -898,5 +999,173 @@ func TestRelayHandler_StreamIdleTimeoutAfterClientWrite_RecordsDiagnostics(t *te
 	}
 	if logItem.FailureStage == nil || *logItem.FailureStage != "stream_idle_timeout" {
 		t.Fatalf("unexpected failure stage: %v", logItem.FailureStage)
+	}
+}
+
+func TestRelayHandler_OpenAIChatStreamIdleTimeoutAfterClientWrite_EmitsFailureTrailer(t *testing.T) {
+	ctx := setupRelayTestEnv(t)
+	apiKey := createRelayTestAPIKey(t, ctx)
+
+	prevIdle := relayStreamIdleTimeout
+	relayStreamIdleTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { relayStreamIdleTimeout = prevIdle })
+
+	requestModel := "chat-stream-idle-after-client-write"
+	upstreamModel := "chat-stream-idle-after-client-write-upstream"
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"created\":1730000000,\"model\":\"upstream\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hello\"}}]}\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		time.Sleep(200 * time.Millisecond)
+	}))
+	defer upstream.Close()
+
+	channel := createRelayTestChannel(t, ctx, "chat-channel", outbound.OutboundTypeOpenAIChat, upstream.URL+"/v1")
+	createRelayTestGroupItem(t, ctx, requestModel, channel.ID, upstreamModel)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader([]byte(`{"model":"chat-stream-idle-after-client-write","stream":true,"messages":[{"role":"user","content":"hi"}]}`)))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	c.Set("api_key_id", apiKey.ID)
+
+	Handler(inbound.InboundTypeOpenAIChat, c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d, body: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"content":"hello"`) {
+		t.Fatalf("expected partial chat chunk, got %q", body)
+	}
+	if !strings.Contains(body, `"finish_reason":"error"`) {
+		t.Fatalf("expected synthetic error finish_reason, got %q", body)
+	}
+	if !strings.Contains(body, `data: [DONE]`) {
+		t.Fatalf("expected done marker after failure trailer, got %q", body)
+	}
+	logItem := lastRelayLog(t, ctx)
+	if !strings.Contains(logItem.Error, "upstream stream idle timeout") {
+		t.Fatalf("unexpected relay error: %s", logItem.Error)
+	}
+}
+
+func TestRelayHandler_OpenAICompletionsStreamIdleTimeoutAfterClientWrite_EmitsFailureTrailer(t *testing.T) {
+	ctx := setupRelayTestEnv(t)
+	apiKey := createRelayTestAPIKey(t, ctx)
+
+	prevIdle := relayStreamIdleTimeout
+	relayStreamIdleTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { relayStreamIdleTimeout = prevIdle })
+
+	requestModel := "completions-stream-idle-after-client-write"
+	upstreamModel := "completions-stream-idle-after-client-write-upstream"
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("data: {\"id\":\"cmpl_1\",\"object\":\"chat.completion.chunk\",\"created\":1730000000,\"model\":\"upstream\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}]}\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		time.Sleep(200 * time.Millisecond)
+	}))
+	defer upstream.Close()
+
+	channel := createRelayTestChannel(t, ctx, "completions-channel", outbound.OutboundTypeOpenAIChat, upstream.URL+"/v1")
+	createRelayTestGroupItem(t, ctx, requestModel, channel.ID, upstreamModel)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/completions", bytes.NewReader([]byte(`{"model":"completions-stream-idle-after-client-write","stream":true,"prompt":"hi"}`)))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	c.Set("api_key_id", apiKey.ID)
+
+	Handler(inbound.InboundTypeOpenAICompletions, c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d, body: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"text":"hello"`) {
+		t.Fatalf("expected partial completions chunk, got %q", body)
+	}
+	if !strings.Contains(body, `"finish_reason":"error"`) {
+		t.Fatalf("expected synthetic error finish_reason, got %q", body)
+	}
+	if !strings.Contains(body, `data: [DONE]`) {
+		t.Fatalf("expected done marker after failure trailer, got %q", body)
+	}
+	logItem := lastRelayLog(t, ctx)
+	if !strings.Contains(logItem.Error, "upstream stream idle timeout") {
+		t.Fatalf("unexpected relay error: %s", logItem.Error)
+	}
+}
+func TestRelayHandler_AnthropicStreamIdleTimeoutAfterClientWrite_EmitsErrorEvent(t *testing.T) {
+	ctx := setupRelayTestEnv(t)
+	apiKey := createRelayTestAPIKey(t, ctx)
+
+	prevIdle := relayStreamIdleTimeout
+	relayStreamIdleTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { relayStreamIdleTimeout = prevIdle })
+
+	requestModel := "anthropic-stream-idle-after-client-write"
+	upstreamModel := "anthropic-stream-idle-after-client-write-upstream"
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"upstream\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"))
+		_, _ = w.Write([]byte("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"))
+		_, _ = w.Write([]byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		time.Sleep(200 * time.Millisecond)
+	}))
+	defer upstream.Close()
+
+	channel := createRelayTestChannel(t, ctx, "anthropic-channel", outbound.OutboundTypeAnthropic, upstream.URL+"/v1")
+	createRelayTestGroupItem(t, ctx, requestModel, channel.ID, upstreamModel)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader([]byte(`{"model":"anthropic-stream-idle-after-client-write","max_tokens":32,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Anthropic-Version", "2023-06-01")
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	c.Set("api_key_id", apiKey.ID)
+	c.Set("request_type", "anthropic")
+
+	Handler(inbound.InboundTypeAnthropic, c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d, body: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `event: content_block_delta`) || !strings.Contains(body, `"text":"hello"`) {
+		t.Fatalf("expected partial anthropic stream body, got %q", body)
+	}
+	if !strings.Contains(body, `event: error`) {
+		t.Fatalf("expected synthetic anthropic error event, got %q", body)
+	}
+	if !strings.Contains(body, `"message":"upstream stream idle timeout after 50ms"`) {
+		t.Fatalf("expected timeout message in anthropic error event, got %q", body)
+	}
+	logItem := lastRelayLog(t, ctx)
+	if !strings.Contains(logItem.Error, "upstream stream idle timeout") {
+		t.Fatalf("unexpected relay error: %s", logItem.Error)
 	}
 }
