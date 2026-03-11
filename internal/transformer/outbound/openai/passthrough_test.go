@@ -33,8 +33,8 @@ func TestRewriteChatCompletionsRequestBody_PreservesUnknownFieldsAndForcesUsage(
 
 	msgs := obj["messages"].([]any)
 	msg0 := msgs[0].(map[string]any)
-	if msg0["role"].(string) != "system" {
-		t.Fatalf("developer role not converted: %v", msg0["role"])
+	if msg0["role"].(string) != "developer" {
+		t.Fatalf("developer role not preserved: %v", msg0["role"])
 	}
 
 	so := obj["stream_options"].(map[string]any)
@@ -204,6 +204,114 @@ func TestResponseOutbound_ChatExtraBody_DoesNotOverrideConvertedTools(t *testing
 	}
 	if _, exists := toolChoice["function"]; exists {
 		t.Fatalf("unexpected chat tool_choice schema leaked into responses request: %v", toolChoice)
+	}
+}
+
+func TestResponseInbound_ConvertsInputAudioAndFile(t *testing.T) {
+	raw := []byte(`{"model":"gpt-4.1","stream":false,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"},{"type":"input_audio","input_audio":{"data":"YmFzZTY0LWF1ZGlv","format":"mp3"}},{"type":"input_file","file_id":"file-123","file_data":"ZmlsZS1kYXRh","file_url":"https://example.com/file.txt","filename":"note.txt"}]}]}`)
+
+	inbound := &inboundopenai.ResponseInbound{}
+	internalReq, err := inbound.TransformRequest(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	if len(internalReq.Messages) != 1 {
+		t.Fatalf("unexpected messages len: %d", len(internalReq.Messages))
+	}
+	parts := internalReq.Messages[0].Content.MultipleContent
+	if len(parts) != 3 {
+		t.Fatalf("unexpected content part len: %d", len(parts))
+	}
+	if parts[1].Type != "input_audio" || parts[1].Audio == nil {
+		t.Fatalf("input_audio part missing: %#v", parts[1])
+	}
+	if parts[1].Audio.Format != "mp3" || parts[1].Audio.Data != "YmFzZTY0LWF1ZGlv" {
+		t.Fatalf("unexpected audio payload: %#v", parts[1].Audio)
+	}
+	if parts[2].Type != "file" || parts[2].File == nil {
+		t.Fatalf("file part missing: %#v", parts[2])
+	}
+	if parts[2].File.Filename != "note.txt" || parts[2].File.FileData != "ZmlsZS1kYXRh" {
+		t.Fatalf("unexpected file payload: %#v", parts[2].File)
+	}
+	if parts[2].File.FileID == nil || *parts[2].File.FileID != "file-123" {
+		t.Fatalf("unexpected file_id: %#v", parts[2].File.FileID)
+	}
+	if parts[2].File.FileURL == nil || *parts[2].File.FileURL != "https://example.com/file.txt" {
+		t.Fatalf("unexpected file_url: %#v", parts[2].File.FileURL)
+	}
+}
+
+func TestResponseOutbound_ConvertsInputAudioAndFile(t *testing.T) {
+	stream := false
+	textValue := "hello"
+	fileID := "file-123"
+	fileURL := "https://example.com/file.txt"
+
+	req := &model.InternalLLMRequest{
+		Model:  "gpt-4.1",
+		Stream: &stream,
+		Messages: []model.Message{{
+			Role: "user",
+			Content: model.MessageContent{MultipleContent: []model.MessageContentPart{
+				{Type: "text", Text: &textValue},
+				{Type: "input_audio", Audio: &model.Audio{Format: "wav", Data: "YmFzZTY0LWF1ZGlv"}},
+				{Type: "file", File: &model.File{Filename: "note.txt", FileData: "ZmlsZS1kYXRh", FileID: &fileID, FileURL: &fileURL}},
+			}},
+		}},
+	}
+
+	outbound := &ResponseOutbound{}
+	httpReq, err := outbound.TransformRequest(context.Background(), req, "https://example.com/v1", "key")
+	if err != nil {
+		t.Fatalf("TransformRequest failed: %v", err)
+	}
+
+	body, err := io.ReadAll(httpReq.Body)
+	if err != nil {
+		t.Fatalf("read request body failed: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal payload failed: %v", err)
+	}
+
+	input, ok := payload["input"].([]any)
+	if !ok || len(input) != 1 {
+		t.Fatalf("input missing or invalid: %v", payload["input"])
+	}
+	msg, ok := input[0].(map[string]any)
+	if !ok {
+		t.Fatalf("input[0] invalid: %T", input[0])
+	}
+	content, ok := msg["content"].([]any)
+	if !ok || len(content) != 3 {
+		t.Fatalf("content missing or invalid: %v", msg["content"])
+	}
+
+	audioItem, ok := content[1].(map[string]any)
+	if !ok || audioItem["type"] != "input_audio" {
+		t.Fatalf("audio item invalid: %v", content[1])
+	}
+	audioPayload, ok := audioItem["input_audio"].(map[string]any)
+	if !ok {
+		t.Fatalf("input_audio payload invalid: %v", audioItem)
+	}
+	if audioPayload["format"] != "wav" || audioPayload["data"] != "YmFzZTY0LWF1ZGlv" {
+		t.Fatalf("unexpected input_audio payload: %v", audioPayload)
+	}
+
+	fileItem, ok := content[2].(map[string]any)
+	if !ok || fileItem["type"] != "input_file" {
+		t.Fatalf("file item invalid: %v", content[2])
+	}
+	if fileItem["filename"] != "note.txt" || fileItem["file_data"] != "ZmlsZS1kYXRh" {
+		t.Fatalf("unexpected input_file payload: %v", fileItem)
+	}
+	if fileItem["file_id"] != "file-123" || fileItem["file_url"] != "https://example.com/file.txt" {
+		t.Fatalf("unexpected input_file refs: %v", fileItem)
 	}
 }
 

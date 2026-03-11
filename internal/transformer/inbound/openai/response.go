@@ -138,6 +138,9 @@ func (i *ResponseInbound) TransformRequest(ctx context.Context, body []byte) (*m
 				internalReq.ExtraBody = b
 			}
 		}
+		if requiresOpenAISameProtocolPassthrough(raw, model.APIFormatOpenAIResponse) {
+			internalReq.RawOnly = true
+		}
 	}
 
 	return internalReq, nil
@@ -991,14 +994,19 @@ func (i *ResponsesInput) UnmarshalJSON(data []byte) error {
 }
 
 type ResponsesItem struct {
-	ID       string          `json:"id,omitempty"`
-	Type     string          `json:"type,omitempty"`
-	Role     string          `json:"role,omitempty"`
-	Content  *ResponsesInput `json:"content,omitempty"`
-	Status   *string         `json:"status,omitempty"`
-	Text     *string         `json:"text,omitempty"`
-	ImageURL *string         `json:"image_url,omitempty"`
-	Detail   *string         `json:"detail,omitempty"`
+	ID         string               `json:"id,omitempty"`
+	Type       string               `json:"type,omitempty"`
+	Role       string               `json:"role,omitempty"`
+	Content    *ResponsesInput      `json:"content,omitempty"`
+	Status     *string              `json:"status,omitempty"`
+	Text       *string              `json:"text,omitempty"`
+	ImageURL   *string              `json:"image_url,omitempty"`
+	Detail     *string              `json:"detail,omitempty"`
+	InputAudio *ResponsesInputAudio `json:"input_audio,omitempty"`
+	FileID     *string              `json:"file_id,omitempty"`
+	FileData   *string              `json:"file_data,omitempty"`
+	FileURL    *string              `json:"file_url,omitempty"`
+	Filename   *string              `json:"filename,omitempty"`
 
 	// Annotations for output_text content
 	Annotations *[]ResponsesAnnotation `json:"annotations,omitempty"`
@@ -1061,6 +1069,11 @@ type ResponsesContentItem struct {
 type ResponsesReasoningSummary struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+}
+
+type ResponsesInputAudio struct {
+	Data   string `json:"data,omitempty"`
+	Format string `json:"format,omitempty"`
 }
 
 type ResponsesAnnotation struct {
@@ -1371,6 +1384,50 @@ func convertItemToMessage(item *ResponsesItem) (*model.Message, error) {
 		}
 		return nil, nil
 
+	case "input_audio":
+		if item.InputAudio != nil {
+			return &model.Message{
+				Role: lo.Ternary(item.Role != "", item.Role, "user"),
+				Content: model.MessageContent{
+					MultipleContent: []model.MessageContentPart{{
+						Type: "input_audio",
+						Audio: &model.Audio{
+							Format: item.InputAudio.Format,
+							Data:   item.InputAudio.Data,
+						},
+					}},
+				},
+			}, nil
+		}
+		return nil, nil
+
+	case "input_file":
+		if item.FileID != nil || item.FileData != nil || item.FileURL != nil || item.Filename != nil {
+			file := &model.File{}
+			if item.FileID != nil && *item.FileID != "" {
+				file.FileID = item.FileID
+			}
+			if item.FileData != nil {
+				file.FileData = *item.FileData
+			}
+			if item.FileURL != nil && *item.FileURL != "" {
+				file.FileURL = item.FileURL
+			}
+			if item.Filename != nil {
+				file.Filename = *item.Filename
+			}
+			return &model.Message{
+				Role: lo.Ternary(item.Role != "", item.Role, "user"),
+				Content: model.MessageContent{
+					MultipleContent: []model.MessageContentPart{{
+						Type: "file",
+						File: file,
+					}},
+				},
+			}, nil
+		}
+		return nil, nil
+
 	case "function_call":
 		return &model.Message{
 			Role: "assistant",
@@ -1441,6 +1498,36 @@ func convertInputToMessageContent(input ResponsesInput) model.MessageContent {
 						URL:    *item.ImageURL,
 						Detail: item.Detail,
 					},
+				})
+			}
+		case "input_audio":
+			if item.InputAudio != nil {
+				parts = append(parts, model.MessageContentPart{
+					Type: "input_audio",
+					Audio: &model.Audio{
+						Format: item.InputAudio.Format,
+						Data:   item.InputAudio.Data,
+					},
+				})
+			}
+		case "input_file":
+			if item.FileID != nil || item.FileData != nil || item.FileURL != nil || item.Filename != nil {
+				file := &model.File{}
+				if item.FileID != nil && *item.FileID != "" {
+					file.FileID = item.FileID
+				}
+				if item.FileData != nil {
+					file.FileData = *item.FileData
+				}
+				if item.FileURL != nil && *item.FileURL != "" {
+					file.FileURL = item.FileURL
+				}
+				if item.Filename != nil {
+					file.Filename = *item.Filename
+				}
+				parts = append(parts, model.MessageContentPart{
+					Type: "file",
+					File: file,
 				})
 			}
 		}

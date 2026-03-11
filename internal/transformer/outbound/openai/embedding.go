@@ -91,7 +91,7 @@ func (o *EmbeddingOutbound) TransformResponse(ctx context.Context, response *htt
 	}
 
 	if len(body) == 0 {
-		return nil, fmt.Errorf("response body is empty")
+		return nil, fmt.Errorf("upstream response body is empty")
 	}
 
 	// 先解析为 OpenAI 标准格式

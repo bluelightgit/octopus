@@ -114,7 +114,7 @@ func (o *ResponseOutbound) TransformResponse(ctx context.Context, response *http
 	}
 
 	if len(body) == 0 {
-		return nil, fmt.Errorf("response body is empty")
+		return nil, fmt.Errorf("upstream response body is empty")
 	}
 
 	// Check for error response
@@ -611,14 +611,19 @@ func (i *ResponsesInput) UnmarshalJSON(data []byte) error {
 }
 
 type ResponsesItem struct {
-	ID       string          `json:"id,omitempty"`
-	Type     string          `json:"type,omitempty"`
-	Role     string          `json:"role,omitempty"`
-	Content  *ResponsesInput `json:"content,omitempty"`
-	Status   *string         `json:"status,omitempty"`
-	Text     *string         `json:"text,omitempty"`
-	ImageURL *string         `json:"image_url,omitempty"`
-	Detail   *string         `json:"detail,omitempty"`
+	ID         string               `json:"id,omitempty"`
+	Type       string               `json:"type,omitempty"`
+	Role       string               `json:"role,omitempty"`
+	Content    *ResponsesInput      `json:"content,omitempty"`
+	Status     *string              `json:"status,omitempty"`
+	Text       *string              `json:"text,omitempty"`
+	ImageURL   *string              `json:"image_url,omitempty"`
+	Detail     *string              `json:"detail,omitempty"`
+	InputAudio *ResponsesInputAudio `json:"input_audio,omitempty"`
+	FileID     *string              `json:"file_id,omitempty"`
+	FileData   *string              `json:"file_data,omitempty"`
+	FileURL    *string              `json:"file_url,omitempty"`
+	Filename   *string              `json:"filename,omitempty"`
 
 	// Annotations for output_text content
 	Annotations []ResponsesAnnotation `json:"annotations,omitempty"`
@@ -645,6 +650,11 @@ type ResponsesItem struct {
 type ResponsesReasoningSummary struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+}
+
+type ResponsesInputAudio struct {
+	Data   string `json:"data,omitempty"`
+	Format string `json:"format,omitempty"`
 }
 
 type ResponsesAnnotation struct {
@@ -939,6 +949,33 @@ func convertUserMessageToResponses(msg model.Message) ResponsesItem {
 						ImageURL: &p.ImageURL.URL,
 						Detail:   p.ImageURL.Detail,
 					})
+				}
+			case "input_audio":
+				if p.Audio != nil {
+					contentItems = append(contentItems, ResponsesItem{
+						Type: "input_audio",
+						InputAudio: &ResponsesInputAudio{
+							Data:   p.Audio.Data,
+							Format: p.Audio.Format,
+						},
+					})
+				}
+			case "file":
+				if p.File != nil {
+					item := ResponsesItem{Type: "input_file"}
+					if p.File.FileData != "" {
+						item.FileData = &p.File.FileData
+					}
+					if p.File.FileID != nil && *p.File.FileID != "" {
+						item.FileID = p.File.FileID
+					}
+					if p.File.FileURL != nil && *p.File.FileURL != "" {
+						item.FileURL = p.File.FileURL
+					}
+					if p.File.Filename != "" {
+						item.Filename = &p.File.Filename
+					}
+					contentItems = append(contentItems, item)
 				}
 			}
 		}

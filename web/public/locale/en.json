@@ -59,6 +59,10 @@
             "sort": "Sort",
             "grid": "Grid",
             "list": "List",
+            "nameAsc": "Name Asc",
+            "nameDesc": "Name Desc",
+            "createdAsc": "Time Asc",
+            "createdDesc": "Time Desc",
             "asc": "Asc",
             "desc": "Desc",
             "filter": {
@@ -111,9 +115,16 @@
             "outputCost": "Output Cost"
         },
         "chart": {
+            "title": "Trend",
             "totalRequests": "Total Requests",
             "totalCost": "Total Cost",
+            "totalTokens": "Total Tokens",
             "timePeriod": "Time Period",
+            "metricType": {
+                "cost": "Cost",
+                "count": "Count",
+                "tokens": "Tokens"
+            },
             "period": {
                 "today": "Today",
                 "last7Days": "7 Days",
@@ -124,6 +135,7 @@
             "title": "Ranking",
             "sortByCost": "Cost",
             "sortByCount": "Count",
+            "sortByTokens": "Tokens",
             "noData": "No ranking data",
             "successRate": "Success Rate"
         }
@@ -363,6 +375,9 @@
             "firstTokenTimeOutHint": "Unit: seconds, only effective for streaming response, 0 = no limit",
             "sessionKeepTime": "Session Keep Time",
             "sessionKeepTimeHint": "Unit: seconds, keeps using the same channel within a session, 0 = disabled",
+            "preferredProtocolFamily": "Preferred Protocol",
+            "protocolRoutingMode": "Routing Strategy",
+            "protocolRoutingHint": "Prefer same-protocol passthrough when possible. If no same-protocol channel is available, routing falls back according to the selected strategy.",
             "items": "Selected Models",
             "addItem": "Add Model",
             "autoAdd": "Auto Add",
@@ -375,6 +390,18 @@
             "random": "Random",
             "failover": "Failover",
             "weighted": "Weighted"
+        },
+        "protocolFamily": {
+            "auto": "Auto Detect",
+            "openaiChat": "OpenAI Chat",
+            "openaiResponses": "OpenAI Responses",
+            "anthropicMessages": "Anthropic Messages",
+            "geminiContents": "Gemini Contents"
+        },
+        "routingMode": {
+            "preferSameProtocol": "Prefer Same Protocol",
+            "sameProtocolOnly": "Same Protocol Only",
+            "allowCrossProtocol": "Allow Cross Protocol"
         },
         "empty": "No groups yet, click the button above to create one"
     },

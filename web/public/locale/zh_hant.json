@@ -59,6 +59,10 @@
             "sort": "排序",
             "grid": "網格",
             "list": "清單",
+            "nameAsc": "名稱正序",
+            "nameDesc": "名稱倒序",
+            "createdAsc": "時間正序",
+            "createdDesc": "時間倒序",
             "asc": "升序",
             "desc": "降序",
             "filter": {
@@ -111,9 +115,16 @@
             "outputCost": "輸出費用"
         },
         "chart": {
+            "title": "趨勢",
             "totalRequests": "請求次數",
             "totalCost": "消費金額",
-            "timePeriod": "時間範圍",
+            "totalTokens": "Tokens 消耗",
+            "timePeriod": "時間週期",
+            "metricType": {
+                "cost": "金額",
+                "count": "次數",
+                "tokens": "Tokens"
+            },
             "period": {
                 "today": "今天",
                 "last7Days": "7天",
@@ -124,6 +135,7 @@
             "title": "排行榜",
             "sortByCost": "金額",
             "sortByCount": "次數",
+            "sortByTokens": "Tokens",
             "noData": "暫無排行數據",
             "successRate": "成功率"
         }
@@ -363,6 +375,9 @@
             "firstTokenTimeOutHint": "單位秒，僅串流響應起效，0 表示不限制",
             "sessionKeepTime": "會話保持",
             "sessionKeepTimeHint": "單位秒，會話期間保持使用同一供應源，0 表示停用",
+            "preferredProtocolFamily": "協議類型",
+            "protocolRoutingMode": "路由策略",
+            "protocolRoutingHint": "優先走與客戶端相同協議的直通鏈路；若沒有同協議供應源，再按路由策略決定是否允許跨協議轉換。",
             "items": "已選模型",
             "addItem": "新增模型",
             "autoAdd": "自動新增",
@@ -375,6 +390,18 @@
             "random": "隨機",
             "failover": "故障轉移",
             "weighted": "加權分配"
+        },
+        "protocolFamily": {
+            "auto": "自動識別",
+            "openaiChat": "OpenAI Chat",
+            "openaiResponses": "OpenAI Responses",
+            "anthropicMessages": "Anthropic Messages",
+            "geminiContents": "Gemini Contents"
+        },
+        "routingMode": {
+            "preferSameProtocol": "優先同協議",
+            "sameProtocolOnly": "僅同協議",
+            "allowCrossProtocol": "允許跨協議"
         },
         "empty": "暫無分組，點擊左上角按鈕建立"
     },

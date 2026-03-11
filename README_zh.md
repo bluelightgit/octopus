@@ -170,6 +170,9 @@ http://localhost:3000
 | `OCTOPUS_LOG_LEVEL` | `log.level` |
 | `OCTOPUS_GITHUB_PAT` | 用于获取最新版本时的速率限制(可选) |
 | `OCTOPUS_RELAY_MAX_SSE_EVENT_SIZE` | 最大 SSE 事件大小(可选) |
+| `OCTOPUS_RELAY_UPSTREAM_HEADER_TIMEOUT_MS` | Relay 上游响应头超时，默认 30000ms |
+| `OCTOPUS_RELAY_NON_STREAM_TIMEOUT_MS` | Relay 非流式请求总超时，默认 300000ms |
+| `OCTOPUS_RELAY_STREAM_IDLE_TIMEOUT_MS` | Relay 流式请求事件空闲超时，默认 90000ms |
 
 
 ## 📸 界面预览
@@ -265,6 +268,13 @@ http://localhost:3000
 | ⚖️ **加权分配** | 根据渠道设置的权重比例分配请求 |
 
 > 💡 **示例**：创建分组名称为 `gpt-4o`，将多个供应商的 GPT-4o 渠道加入该分组，即可通过统一的 `model: gpt-4o` 访问所有渠道。
+
+**协议路由：**
+
+- 每个分组都可以声明协议族：`auto`、`openai_chat`、`openai_responses`、`anthropic_messages`、`gemini_contents`
+- `prefer_same_protocol` 会优先尝试同协议直通；若没有可用同协议渠道，再回退到跨协议转换
+- `same_protocol_only` 只允许同协议渠道；若没有匹配渠道会直接返回 `400`
+- `allow_cross_protocol` 保持原有行为，允许立即进入跨协议路由
 
 ---
 

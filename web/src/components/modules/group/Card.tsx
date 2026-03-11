@@ -14,7 +14,7 @@ import type { SelectedMember } from './ItemList';
 import { MemberList } from './ItemList';
 import { GroupEditor, type GroupEditorValues } from './Editor';
 import { buildChannelNameByModelKey, modelChannelKey, MODE_LABELS } from './utils';
-import { GroupMode, type GroupUpdateRequest } from '@/api/endpoints/group';
+import { GroupMode, GroupProtocolFamily, GroupProtocolRoutingMode, type GroupUpdateRequest } from '@/api/endpoints/group';
 import {
     MorphingDialog,
     MorphingDialogClose,
@@ -55,6 +55,8 @@ function EditDialogContent({ group, displayMembers, isSubmitting, onSubmit }: Ed
                         mode: group.mode,
                         first_token_time_out: group.first_token_time_out ?? 0,
                         session_keep_time: group.session_keep_time ?? 0,
+                        preferred_protocol_family: group.preferred_protocol_family ?? GroupProtocolFamily.Auto,
+                        protocol_routing_mode: group.protocol_routing_mode ?? GroupProtocolRoutingMode.PreferSameProtocol,
                         members: displayMembers,
                     }}
                     submitText={t('detail.actions.save')}
@@ -216,12 +218,16 @@ export function GroupCard({ group }: { group: Group }) {
         const nextRegex = (values.match_regex ?? '').trim();
         const nextFirstTokenTimeOut = values.first_token_time_out ?? 0;
         const nextSessionKeepTime = values.session_keep_time ?? 0;
+        const nextPreferredProtocolFamily = values.preferred_protocol_family ?? GroupProtocolFamily.Auto;
+        const nextProtocolRoutingMode = values.protocol_routing_mode ?? GroupProtocolRoutingMode.PreferSameProtocol;
 
         if (nextName && nextName !== group.name) payload.name = nextName;
         if (values.mode !== group.mode) payload.mode = values.mode;
         if (nextRegex !== (group.match_regex ?? '')) payload.match_regex = nextRegex;
         if (nextFirstTokenTimeOut !== (group.first_token_time_out ?? 0)) payload.first_token_time_out = nextFirstTokenTimeOut;
         if (nextSessionKeepTime !== (group.session_keep_time ?? 0)) payload.session_keep_time = nextSessionKeepTime;
+        if (nextPreferredProtocolFamily !== (group.preferred_protocol_family ?? GroupProtocolFamily.Auto)) payload.preferred_protocol_family = nextPreferredProtocolFamily;
+        if (nextProtocolRoutingMode !== (group.protocol_routing_mode ?? GroupProtocolRoutingMode.PreferSameProtocol)) payload.protocol_routing_mode = nextProtocolRoutingMode;
         if (items_to_add.length) payload.items_to_add = items_to_add;
         if (items_to_update.length) payload.items_to_update = items_to_update;
         if (items_to_delete.length) payload.items_to_delete = items_to_delete;

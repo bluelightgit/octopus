@@ -59,6 +59,10 @@
             "sort": "排序",
             "grid": "网格",
             "list": "列表",
+            "nameAsc": "名称正序",
+            "nameDesc": "名称倒序",
+            "createdAsc": "时间正序",
+            "createdDesc": "时间倒序",
             "asc": "升序",
             "desc": "降序",
             "filter": {
@@ -111,9 +115,16 @@
             "outputCost": "输出费用"
         },
         "chart": {
+            "title": "趋势",
             "totalRequests": "请求次数",
             "totalCost": "消费金额",
-            "timePeriod": "时间范围",
+            "totalTokens": "Tokens 消耗",
+            "timePeriod": "时间周期",
+            "metricType": {
+                "cost": "金额",
+                "count": "次数",
+                "tokens": "Tokens"
+            },
             "period": {
                 "today": "今天",
                 "last7Days": "7天",
@@ -124,6 +135,7 @@
             "title": "排行榜",
             "sortByCost": "金额",
             "sortByCount": "次数",
+            "sortByTokens": "Tokens",
             "noData": "暂无排行数据",
             "successRate": "成功率"
         }
@@ -363,6 +375,9 @@
             "firstTokenTimeOutHint": "单位秒，仅流式响应起效，0 表示不限制",
             "sessionKeepTime": "会话保持",
             "sessionKeepTimeHint": "单位秒，会话期间保持使用同一渠道，0 表示禁用",
+            "preferredProtocolFamily": "协议类型",
+            "protocolRoutingMode": "路由策略",
+            "protocolRoutingHint": "优先走与客户端相同协议的直通链路；若没有同协议渠道，再按路由策略决定是否允许跨协议转换。",
             "items": "已选模型",
             "addItem": "添加模型",
             "autoAdd": "自动添加",
@@ -375,6 +390,18 @@
             "random": "随机",
             "failover": "故障转移",
             "weighted": "加权分配"
+        },
+        "protocolFamily": {
+            "auto": "自动识别",
+            "openaiChat": "OpenAI Chat",
+            "openaiResponses": "OpenAI Responses",
+            "anthropicMessages": "Anthropic Messages",
+            "geminiContents": "Gemini Contents"
+        },
+        "routingMode": {
+            "preferSameProtocol": "优先同协议",
+            "sameProtocolOnly": "仅同协议",
+            "allowCrossProtocol": "允许跨协议"
         },
         "empty": "暂无分组，点击左上角按钮创建"
     },

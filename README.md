@@ -170,6 +170,9 @@ All configuration options can be overridden via environment variables using the 
 | `OCTOPUS_LOG_LEVEL` | `log.level` |
 | `OCTOPUS_GITHUB_PAT` | For rate limiting when getting the latest version (optional) |
 | `OCTOPUS_RELAY_MAX_SSE_EVENT_SIZE` | Maximum SSE event size (optional) |
+| `OCTOPUS_RELAY_UPSTREAM_HEADER_TIMEOUT_MS` | Upstream response header timeout for relay requests (default: 30000ms) |
+| `OCTOPUS_RELAY_NON_STREAM_TIMEOUT_MS` | End-to-end timeout for non-stream relay requests (default: 300000ms) |
+| `OCTOPUS_RELAY_STREAM_IDLE_TIMEOUT_MS` | Idle timeout between upstream stream events (default: 90000ms) |
 
 ## 📸 Screenshots
 
@@ -264,6 +267,13 @@ Groups aggregate multiple channels into a unified external model name.
 | ⚖️ **Weighted** | Distributes requests based on configured channel weights |
 
 > 💡 **Example**: Create a group named `gpt-4o`, add multiple providers' GPT-4o channels to it, then access all channels via a unified `model: gpt-4o`.
+
+**Protocol Routing:**
+
+- Each group can declare a preferred protocol family: `auto`, `openai_chat`, `openai_responses`, `anthropic_messages`, or `gemini_contents`
+- `prefer_same_protocol` first tries same-protocol channels for direct passthrough, then falls back to cross-protocol conversion if needed
+- `same_protocol_only` only allows same-protocol channels and returns `400` when none match
+- `allow_cross_protocol` keeps the previous behavior and allows mixed-protocol routing immediately
 
 ---
 

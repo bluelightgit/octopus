@@ -27,14 +27,11 @@ import (
 
 // Handler 处理入站请求并转发到上游服务
 func Handler(inboundType inbound.InboundType, c *gin.Context) {
-	// 解析请求
 	internalRequest, inAdapter, err := parseRequest(inboundType, c)
 	if err != nil {
 		return
 	}
-	// NOTE: Do not force stream mode for Responses requests.
-	// Some clients use non-stream Responses calls and expect a single JSON response.
-	// We preserve the client-provided `stream` field.
+
 	supportedModels := c.GetString("supported_models")
 	if supportedModels != "" {
 		supportedModelsArray := strings.Split(supportedModels, ",")
@@ -47,7 +44,6 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	requestModel := internalRequest.Model
 	apiKeyID := c.GetInt("api_key_id")
 
-	// 获取通道分组
 	group, err := op.GroupGetMap(requestModel, c.Request.Context())
 	if err != nil {
 		resp.Error(c, http.StatusNotFound, "model not found")
@@ -61,17 +57,32 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		return
 	}
 
-	// 创建迭代器（策略排序 + 粘性优先）
-	iter := balancer.NewIterator(group, apiKeyID, requestModel)
-	if iter.Len() == 0 {
-		resp.Error(c, http.StatusServiceUnavailable, "no available channel")
+	protocolPlan, err := buildProtocolRoutePlan(group, internalRequest)
+	if err != nil {
+		resp.Error(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	log.Infof("protocol routing for model %s: %s", requestModel, protocolRoutePlanSummary(protocolPlan))
 
-	// 初始化 Metrics
+	primaryGroup := cloneGroupWithItems(group, protocolPlan.Primary)
+	primaryIter := balancer.NewIterator(primaryGroup, apiKeyID, requestModel)
+	var fallbackIter *balancer.Iterator
+	if len(protocolPlan.Fallback) > 0 {
+		fallbackGroup := cloneGroupWithItems(group, protocolPlan.Fallback)
+		fallbackIter = balancer.NewIterator(fallbackGroup, apiKeyID, requestModel)
+	}
+
+	activeIter := primaryIter
+	if activeIter.Len() == 0 {
+		if fallbackIter == nil || fallbackIter.Len() == 0 {
+			resp.Error(c, http.StatusServiceUnavailable, "no available channel")
+			return
+		}
+		activeIter = fallbackIter
+		fallbackIter = nil
+	}
+
 	metrics := NewRelayMetrics(apiKeyID, requestModel, internalRequest)
-
-	// 请求级上下文
 	req := &relayRequest{
 		c:               c,
 		inAdapter:       inAdapter,
@@ -79,105 +90,122 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		metrics:         metrics,
 		apiKeyID:        apiKeyID,
 		requestModel:    requestModel,
-		iter:            iter,
+		iter:            activeIter,
 	}
 
 	var lastErr error
+	var firstCompatibilityErr error
+	attemptStarted := false
 
-	for iter.Next() {
-		select {
-		case <-c.Request.Context().Done():
-			log.Infof("request context canceled, stopping retry")
-			metrics.Save(c.Request.Context(), false, context.Canceled, iter.Attempts())
-			return
-		default:
-		}
+	for {
+		for activeIter.Next() {
+			select {
+			case <-c.Request.Context().Done():
+				log.Infof("request context canceled, stopping retry")
+				metrics.Save(c.Request.Context(), false, context.Canceled, mergeAttempts(primaryIter, fallbackIter, activeIter))
+				return
+			default:
+			}
 
-		item := iter.Item()
-
-		// 获取通道
-		channel, err := op.ChannelGet(item.ChannelID, c.Request.Context())
-		if err != nil {
-			log.Warnf("failed to get channel %d: %v", item.ChannelID, err)
-			iter.Skip(item.ChannelID, 0, fmt.Sprintf("channel_%d", item.ChannelID), fmt.Sprintf("channel not found: %v", err))
-			lastErr = err
-			continue
-		}
-		if !channel.Enabled {
-			iter.Skip(channel.ID, 0, channel.Name, "channel disabled")
-			continue
-		}
-
-		if internalRequest.RawOnly {
-			if channel.Type != rawOnlyRequiredType {
-				iter.Skip(channel.ID, 0, channel.Name, fmt.Sprintf("raw-only request requires channel type %d", rawOnlyRequiredType))
+			item := activeIter.Item()
+			channel, err := op.ChannelGet(item.ChannelID, c.Request.Context())
+			if err != nil {
+				log.Warnf("failed to get channel %d: %v", item.ChannelID, err)
+				activeIter.Skip(item.ChannelID, 0, fmt.Sprintf("channel_%d", item.ChannelID), fmt.Sprintf("channel not found: %v", err))
+				lastErr = err
 				continue
 			}
-			rawOnlySawCompatible = true
+			if !channel.Enabled {
+				activeIter.Skip(channel.ID, 0, channel.Name, "channel disabled")
+				continue
+			}
+
+			if internalRequest.RawOnly {
+				if channel.Type != rawOnlyRequiredType {
+					activeIter.Skip(channel.ID, 0, channel.Name, fmt.Sprintf("raw-only request requires channel type %d", rawOnlyRequiredType))
+					continue
+				}
+				rawOnlySawCompatible = true
+			}
+
+			usedKey := channel.GetChannelKey()
+			if usedKey.ChannelKey == "" {
+				activeIter.Skip(channel.ID, 0, channel.Name, "no available key")
+				continue
+			}
+
+			if activeIter.SkipCircuitBreak(channel.ID, usedKey.ID, channel.Name) {
+				continue
+			}
+
+			outAdapter := outbound.Get(channel.Type)
+			if outAdapter == nil {
+				activeIter.Skip(channel.ID, usedKey.ID, channel.Name, fmt.Sprintf("unsupported channel type: %d", channel.Type))
+				continue
+			}
+
+			if internalRequest.IsEmbeddingRequest() && !outbound.IsEmbeddingChannelType(channel.Type) {
+				activeIter.Skip(channel.ID, usedKey.ID, channel.Name, "channel type not compatible with embedding request")
+				continue
+			}
+			if internalRequest.IsChatRequest() && !outbound.IsChatChannelType(channel.Type) {
+				activeIter.Skip(channel.ID, usedKey.ID, channel.Name, "channel type not compatible with chat request")
+				continue
+			}
+			if compatErr := outbound.ValidateRequestCompatibility(channel.Type, internalRequest); compatErr != nil {
+				if firstCompatibilityErr == nil {
+					firstCompatibilityErr = compatErr
+				}
+				activeIter.Skip(channel.ID, usedKey.ID, channel.Name, compatErr.Error())
+				continue
+			}
+
+			internalRequest.Model = item.ModelName
+			log.Infof("request model %s, mode: %d, forwarding to channel: %s model: %s (attempt %d/%d, sticky=%t)",
+				requestModel, group.Mode, channel.Name, item.ModelName,
+				activeIter.Index()+1, activeIter.Len(), activeIter.IsSticky())
+
+			req.iter = activeIter
+			ra := &relayAttempt{
+				relayRequest:         req,
+				outAdapter:           outAdapter,
+				channel:              channel,
+				usedKey:              usedKey,
+				firstTokenTimeOutSec: group.FirstTokenTimeOut,
+			}
+
+			attemptStarted = true
+			result := ra.attempt()
+			if result.Success {
+				metrics.Save(c.Request.Context(), true, nil, mergeAttempts(primaryIter, fallbackIter, activeIter))
+				return
+			}
+			if result.Written {
+				metrics.Save(c.Request.Context(), false, result.Err, mergeAttempts(primaryIter, fallbackIter, activeIter))
+				return
+			}
+			lastErr = result.Err
 		}
 
-		usedKey := channel.GetChannelKey()
-		if usedKey.ChannelKey == "" {
-			iter.Skip(channel.ID, 0, channel.Name, "no available key")
-			continue
+		if fallbackIter == nil || activeIter == fallbackIter {
+			break
 		}
-
-		// 熔断检查
-		if iter.SkipCircuitBreak(channel.ID, usedKey.ID, channel.Name) {
-			continue
-		}
-
-		// 出站适配器
-		outAdapter := outbound.Get(channel.Type)
-		if outAdapter == nil {
-			iter.Skip(channel.ID, usedKey.ID, channel.Name, fmt.Sprintf("unsupported channel type: %d", channel.Type))
-			continue
-		}
-
-		// 类型兼容性检查
-		if internalRequest.IsEmbeddingRequest() && !outbound.IsEmbeddingChannelType(channel.Type) {
-			iter.Skip(channel.ID, usedKey.ID, channel.Name, "channel type not compatible with embedding request")
-			continue
-		}
-		if internalRequest.IsChatRequest() && !outbound.IsChatChannelType(channel.Type) {
-			iter.Skip(channel.ID, usedKey.ID, channel.Name, "channel type not compatible with chat request")
-			continue
-		}
-
-		// 设置实际模型
-		internalRequest.Model = item.ModelName
-
-		log.Infof("request model %s, mode: %d, forwarding to channel: %s model: %s (attempt %d/%d, sticky=%t)",
-			requestModel, group.Mode, channel.Name, item.ModelName,
-			iter.Index()+1, iter.Len(), iter.IsSticky())
-
-		// 构造尝试级上下文 -- 只写变化的 4 个字段
-		ra := &relayAttempt{
-			relayRequest:         req,
-			outAdapter:           outAdapter,
-			channel:              channel,
-			usedKey:              usedKey,
-			firstTokenTimeOutSec: group.FirstTokenTimeOut,
-		}
-
-		result := ra.attempt()
-		if result.Success {
-			metrics.Save(c.Request.Context(), true, nil, iter.Attempts())
-			return
-		}
-		if result.Written {
-			metrics.Save(c.Request.Context(), false, result.Err, iter.Attempts())
-			return
-		}
-		lastErr = result.Err
+		activeIter = fallbackIter
+		req.iter = activeIter
+		fallbackIter = nil
 	}
 
-	// 所有通道都失败
 	var ue upstreamHTTPError
 	if internalRequest.RawOnly && rawOnlyHasRequired && !rawOnlySawCompatible {
 		err := errors.New("no same-protocol channel for raw-only request")
-		metrics.Save(c.Request.Context(), false, err, iter.Attempts())
+		metrics.Save(c.Request.Context(), false, err, mergeAttempts(primaryIter, fallbackIter, activeIter))
 		resp.Error(c, http.StatusBadRequest, "no same-protocol channel for raw-only request")
+		return
+	}
+
+	if !attemptStarted && firstCompatibilityErr != nil {
+		metrics.Save(c.Request.Context(), false, firstCompatibilityErr, mergeAttempts(primaryIter, fallbackIter, activeIter))
+		resp.Error(c, http.StatusBadRequest, firstCompatibilityErr.Error())
 		return
 	}
 
@@ -185,7 +213,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		if metrics != nil {
 			metrics.SetClientResponseBody(ue.Body)
 		}
-		metrics.Save(c.Request.Context(), false, lastErr, iter.Attempts())
+		metrics.Save(c.Request.Context(), false, lastErr, mergeAttempts(primaryIter, fallbackIter, activeIter))
 		ct := strings.TrimSpace(ue.ContentType)
 		if ct == "" {
 			ct = "application/json"
@@ -197,8 +225,28 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		c.Data(code, ct, ue.Body)
 		return
 	}
-	metrics.Save(c.Request.Context(), false, lastErr, iter.Attempts())
+
+	metrics.Save(c.Request.Context(), false, lastErr, mergeAttempts(primaryIter, fallbackIter, activeIter))
 	resp.Error(c, http.StatusBadGateway, "all channels failed")
+}
+
+func mergeAttempts(primaryIter, fallbackIter, activeIter *balancer.Iterator) []dbmodel.ChannelAttempt {
+	attempts := make([]dbmodel.ChannelAttempt, 0)
+	seen := map[*balancer.Iterator]struct{}{}
+	appendAttempts := func(it *balancer.Iterator) {
+		if it == nil {
+			return
+		}
+		if _, ok := seen[it]; ok {
+			return
+		}
+		seen[it] = struct{}{}
+		attempts = append(attempts, it.Attempts()...)
+	}
+	appendAttempts(primaryIter)
+	appendAttempts(fallbackIter)
+	appendAttempts(activeIter)
+	return attempts
 }
 
 // attempt 统一管理一次通道尝试的完整生命周期
@@ -284,9 +332,181 @@ func parseRequest(inboundType inbound.InboundType, c *gin.Context) (*model.Inter
 	return internalRequest, inAdapter, nil
 }
 
+func formatRelayTimeout(d time.Duration) string {
+	if d <= 0 {
+		return "0s"
+	}
+	if d%time.Second == 0 {
+		return fmt.Sprintf("%ds", int(d/time.Second))
+	}
+	return d.String()
+}
+
+func isTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	type timeout interface{ Timeout() bool }
+	var te timeout
+	return errors.As(err, &te) && te.Timeout()
+}
+
+func upstreamNonStreamTimeoutError() error {
+	return fmt.Errorf("upstream non-stream timeout after %s", formatRelayTimeout(relayNonStreamTimeout))
+}
+
+func upstreamStreamIdleTimeoutError() error {
+	return fmt.Errorf("upstream stream idle timeout after %s", formatRelayTimeout(relayStreamIdleTimeout))
+}
+
+func upstreamStreamBeforeFirstEventError() error {
+	return fmt.Errorf("upstream stream ended before first event")
+}
+
+func upstreamStreamUnexpectedEOFError() error {
+	return fmt.Errorf("upstream stream ended unexpectedly before terminal event")
+}
+
+func upstreamStreamReadError(err error) error {
+	return fmt.Errorf("upstream stream read error: %w", err)
+}
+
+func upstreamResponseReadError(err error) error {
+	return fmt.Errorf("upstream response read error: %w", err)
+}
+
+func firstMeaningfulOutputTimeoutError(sec int) error {
+	return fmt.Errorf("first meaningful output timeout (%ds)", sec)
+}
+
+func (ra *relayAttempt) isStreamRequest() bool {
+	return ra != nil && ra.internalRequest != nil && ra.internalRequest.Stream != nil && *ra.internalRequest.Stream
+}
+
+func (ra *relayAttempt) shouldBufferPreludeUntilMeaningfulOutput() bool {
+	return ra != nil && ra.internalRequest != nil && ra.internalRequest.RawAPIFormat == model.APIFormatOpenAIResponse
+}
+
+func (ra *relayAttempt) isPassthroughTerminalEvent(eventType, data string) bool {
+	trimmed := strings.TrimSpace(data)
+	if trimmed == "[DONE]" {
+		return true
+	}
+
+	if ra == nil || ra.internalRequest == nil {
+		return false
+	}
+
+	switch ra.internalRequest.RawAPIFormat {
+	case model.APIFormatOpenAIResponse:
+		var payload struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal([]byte(data), &payload); err == nil {
+			switch payload.Type {
+			case "response.completed", "response.incomplete", "response.failed", "error":
+				return true
+			}
+		}
+	case model.APIFormatOpenAIChatCompletion:
+		var payload struct {
+			Choices []struct {
+				FinishReason *string `json:"finish_reason,omitempty"`
+			} `json:"choices,omitempty"`
+		}
+		if err := json.Unmarshal([]byte(data), &payload); err == nil {
+			for _, choice := range payload.Choices {
+				if choice.FinishReason != nil {
+					return true
+				}
+			}
+		}
+	case model.APIFormatAnthropicMessage:
+		return strings.EqualFold(strings.TrimSpace(eventType), "message_stop")
+	}
+
+	return false
+}
+
+func isTerminalInternalStream(stream *model.InternalLLMResponse) bool {
+	if stream == nil {
+		return false
+	}
+	if stream.Object == "[DONE]" {
+		return true
+	}
+	for _, choice := range stream.Choices {
+		if choice.FinishReason != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func stopTimer(timer *time.Timer) {
+	if timer == nil {
+		return
+	}
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+}
+
+func resetTimer(timer *time.Timer, d time.Duration) {
+	if timer == nil {
+		return
+	}
+	stopTimer(timer)
+	timer.Reset(d)
+}
+
+func inspectResponsesEvent(data string) (bool, bool) {
+	payload := strings.TrimSpace(data)
+	if payload == "" {
+		return false, false
+	}
+	if payload == "[DONE]" {
+		return false, true
+	}
+
+	var meta struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(payload), &meta); err != nil {
+		log.Warnf("failed to inspect responses event payload: %v", err)
+		return true, false
+	}
+
+	switch meta.Type {
+	case "response.created", "response.in_progress", "response.output_item.added", "response.content_part.added", "response.reasoning_summary_part.added", "response.output_item.done", "response.content_part.done", "response.reasoning_summary_part.done":
+		return false, false
+	case "response.output_text.delta", "response.output_text.done", "response.reasoning_summary_text.delta", "response.reasoning_summary_text.done", "response.reasoning_text.delta", "response.reasoning_text.done", "response.function_call_arguments.delta", "response.function_call_arguments.done", "response.refusal.delta", "response.refusal.done":
+		return true, false
+	case "response.completed", "response.incomplete", "response.failed", "error":
+		return false, true
+	default:
+		return true, false
+	}
+}
+
 // forward 转发请求到上游服务
 func (ra *relayAttempt) forward() (int, error) {
 	ctx := ra.c.Request.Context()
+	var cancel context.CancelFunc
+	if !ra.isStreamRequest() && relayNonStreamTimeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, relayNonStreamTimeout)
+		defer cancel()
+	}
+
+	if beta := strings.TrimSpace(ra.c.Request.Header.Get("Anthropic-Beta")); beta != "" {
+		ctx = context.WithValue(ctx, "anthropic_beta_header", beta)
+	}
 
 	// 构建出站请求
 	outboundRequest, err := ra.outAdapter.TransformRequest(
@@ -306,6 +526,9 @@ func (ra *relayAttempt) forward() (int, error) {
 	// 发送请求
 	response, err := ra.sendRequest(outboundRequest)
 	if err != nil {
+		if !ra.isStreamRequest() && relayNonStreamTimeout > 0 && isTimeoutError(ctx.Err()) {
+			return 0, upstreamNonStreamTimeoutError()
+		}
 		return 0, fmt.Errorf("failed to send request: %w", err)
 	}
 	defer response.Body.Close()
@@ -329,7 +552,10 @@ func (ra *relayAttempt) copyHeaders(outboundRequest *http.Request) {
 		if hopByHopHeaders[strings.ToLower(key)] {
 			continue
 		}
-		if strings.EqualFold(key, "accept") {
+		if strings.EqualFold(key, "accept") || strings.EqualFold(key, "authorization") || strings.EqualFold(key, "x-api-key") {
+			continue
+		}
+		if outboundRequest.Header.Get(key) != "" {
 			continue
 		}
 		for _, value := range values {
@@ -390,6 +616,15 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 	ra.c.Header("X-Accel-Buffering", "no")
 
 	firstToken := true
+	sawAnyEvent := false
+	sawTerminalEvent := false
+	bufferPrelude := ra.shouldBufferPreludeUntilMeaningfulOutput()
+	type pendingSSEChunk struct {
+		eventType string
+		data      string
+		encoded   []byte
+	}
+	pendingPrelude := make([]pendingSSEChunk, 0, 4)
 
 	type sseReadResult struct {
 		eventType string
@@ -426,10 +661,46 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		firstTokenTimer = time.NewTimer(time.Duration(ra.firstTokenTimeOutSec) * time.Second)
 		firstTokenC = firstTokenTimer.C
 		defer func() {
-			if firstTokenTimer != nil {
-				firstTokenTimer.Stop()
-			}
+			stopTimer(firstTokenTimer)
 		}()
+	}
+
+	var idleTimer *time.Timer
+	var idleC <-chan time.Time
+	if relayStreamIdleTimeout > 0 {
+		idleTimer = time.NewTimer(relayStreamIdleTimeout)
+		idleC = idleTimer.C
+		defer func() {
+			stopTimer(idleTimer)
+		}()
+	}
+
+	writeChunk := func(chunk []byte) {
+		if len(chunk) == 0 {
+			return
+		}
+		if ra.metrics != nil {
+			ra.metrics.AppendClientResponseChunk(chunk)
+		}
+		ra.c.Writer.Write(chunk)
+		ra.c.Writer.Flush()
+	}
+
+	writePassthroughChunk := func(eventType, rawData string, chunk []byte) {
+		if len(chunk) == 0 {
+			return
+		}
+		if rawData != "" {
+			ra.tapStreamForMetrics(ctx, rawData)
+		}
+		writeChunk(chunk)
+	}
+
+	flushPendingPrelude := func() {
+		for _, chunk := range pendingPrelude {
+			writePassthroughChunk(chunk.eventType, chunk.data, chunk.encoded)
+		}
+		pendingPrelude = pendingPrelude[:0]
 	}
 
 	for {
@@ -438,31 +709,55 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			log.Infof("client disconnected, stopping stream")
 			_ = response.Body.Close()
 			return nil
-		case <-firstTokenC:
-			log.Warnf("first token timeout (%ds), switching channel", ra.firstTokenTimeOutSec)
+		case <-idleC:
+			log.Warnf("upstream stream idle timeout after %s", formatRelayTimeout(relayStreamIdleTimeout))
 			_ = response.Body.Close()
-			return fmt.Errorf("first token timeout (%ds)", ra.firstTokenTimeOutSec)
+			return upstreamStreamIdleTimeoutError()
+		case <-firstTokenC:
+			log.Warnf("first meaningful output timeout (%ds), switching channel", ra.firstTokenTimeOutSec)
+			_ = response.Body.Close()
+			return firstMeaningfulOutputTimeoutError(ra.firstTokenTimeOutSec)
 		case r, ok := <-results:
 			if !ok {
-				log.Infof("stream end")
+				if !sawAnyEvent {
+					log.Warnf("upstream stream ended before first event")
+					return upstreamStreamBeforeFirstEventError()
+				}
+				if !sawTerminalEvent {
+					log.Warnf("upstream stream ended unexpectedly before terminal event")
+					return upstreamStreamUnexpectedEOFError()
+				}
+				log.Infof("stream end after terminal event")
 				return nil
 			}
 			if r.err != nil {
 				log.Warnf("failed to read event: %v", r.err)
 				_ = response.Body.Close()
-				return fmt.Errorf("failed to read stream event: %w", r.err)
+				return upstreamStreamReadError(r.err)
+			}
+
+			sawAnyEvent = true
+			if idleTimer != nil && !sawTerminalEvent {
+				resetTimer(idleTimer, relayStreamIdleTimeout)
 			}
 
 			var (
-				data []byte
-				err  error
+				data     []byte
+				err      error
+				terminal bool
 			)
 
 			if passthroughSSE {
+				terminal = ra.isPassthroughTerminalEvent(r.eventType, r.data)
 				if r.data == "" {
+					if terminal {
+						sawTerminalEvent = true
+						stopTimer(idleTimer)
+						idleTimer = nil
+						idleC = nil
+					}
 					continue
 				}
-				ra.tapStreamForMetrics(ctx, r.data)
 				switch ra.internalRequest.RawAPIFormat {
 				case model.APIFormatAnthropicMessage:
 					data = formatSSEEventString(r.eventType, r.data)
@@ -472,21 +767,43 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 
 				// Stop early once the upstream signals completion.
 				if strings.TrimSpace(r.data) == "[DONE]" {
+					sawTerminalEvent = true
 					if firstToken {
 						ra.metrics.SetFirstTokenTime(time.Now())
 						firstToken = false
 					}
-					if ra.metrics != nil {
-						ra.metrics.AppendClientResponseChunk(data)
-					}
-					ra.c.Writer.Write(data)
-					ra.c.Writer.Flush()
+					flushPendingPrelude()
+					writePassthroughChunk(r.eventType, r.data, data)
 					_ = response.Body.Close()
 					return nil
 				}
 			} else {
-				data, err = ra.transformStreamData(ctx, r.data)
+				data, terminal, err = ra.transformStreamData(ctx, r.data)
 				if err != nil || len(data) == 0 {
+					if terminal {
+						sawTerminalEvent = true
+						stopTimer(idleTimer)
+						idleTimer = nil
+						idleC = nil
+					}
+					continue
+				}
+			}
+
+			if terminal {
+				sawTerminalEvent = true
+				stopTimer(idleTimer)
+				idleTimer = nil
+				idleC = nil
+			}
+
+			if bufferPrelude && len(data) > 0 && firstToken {
+				meaningfulOutput, terminalChunk := inspectResponsesEvent(r.data)
+				if terminalChunk {
+					terminal = true
+				}
+				if !meaningfulOutput && !terminal {
+					pendingPrelude = append(pendingPrelude, pendingSSEChunk{eventType: r.eventType, data: r.data, encoded: data})
 					continue
 				}
 			}
@@ -495,22 +812,18 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				ra.metrics.SetFirstTokenTime(time.Now())
 				firstToken = false
 				if firstTokenTimer != nil {
-					if !firstTokenTimer.Stop() {
-						select {
-						case <-firstTokenTimer.C:
-						default:
-						}
-					}
+					stopTimer(firstTokenTimer)
 					firstTokenTimer = nil
 					firstTokenC = nil
 				}
 			}
 
-			if ra.metrics != nil {
-				ra.metrics.AppendClientResponseChunk(data)
+			flushPendingPrelude()
+			if passthroughSSE {
+				writePassthroughChunk(r.eventType, r.data, data)
+			} else {
+				writeChunk(data)
 			}
-			ra.c.Writer.Write(data)
-			ra.c.Writer.Flush()
 		}
 	}
 }
@@ -632,23 +945,24 @@ func formatSSEEventString(eventType string, data string) []byte {
 }
 
 // transformStreamData 转换流式数据
-func (ra *relayAttempt) transformStreamData(ctx context.Context, data string) ([]byte, error) {
+func (ra *relayAttempt) transformStreamData(ctx context.Context, data string) ([]byte, bool, error) {
 	internalStream, err := ra.outAdapter.TransformStream(ctx, []byte(data))
 	if err != nil {
 		log.Warnf("failed to transform stream: %v", err)
-		return nil, err
+		return nil, false, err
 	}
 	if internalStream == nil {
-		return nil, nil
+		return nil, false, nil
 	}
+	terminal := isTerminalInternalStream(internalStream)
 
 	inStream, err := ra.inAdapter.TransformStream(ctx, internalStream)
 	if err != nil {
 		log.Warnf("failed to transform stream: %v", err)
-		return nil, err
+		return nil, terminal, err
 	}
 
-	return inStream, nil
+	return inStream, terminal, nil
 }
 
 // handleResponse 处理非流式响应
@@ -660,7 +974,10 @@ func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Respo
 		bodyBytes, err := io.ReadAll(response.Body)
 		if err != nil {
 			log.Warnf("failed to read error response body: %v", err)
-			return fmt.Errorf("failed to read response body: %w", err)
+			if relayNonStreamTimeout > 0 && isTimeoutError(ctx.Err()) {
+				return upstreamNonStreamTimeoutError()
+			}
+			return upstreamResponseReadError(err)
 		}
 
 		// Best-effort: still populate internal response for metrics/logging.
@@ -685,10 +1002,13 @@ func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Respo
 		bodyBytes, err := io.ReadAll(response.Body)
 		if err != nil {
 			log.Warnf("failed to read response body: %v", err)
-			return fmt.Errorf("failed to read response body: %w", err)
+			if relayNonStreamTimeout > 0 && isTimeoutError(ctx.Err()) {
+				return upstreamNonStreamTimeoutError()
+			}
+			return upstreamResponseReadError(err)
 		}
 		if len(bodyBytes) == 0 {
-			return fmt.Errorf("response body is empty")
+			return fmt.Errorf("upstream response body is empty")
 		}
 
 		// Best-effort: still populate internal response for metrics/logging without
@@ -717,6 +1037,9 @@ func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Respo
 	internalResponse, err := ra.outAdapter.TransformResponse(ctx, response)
 	if err != nil {
 		log.Warnf("failed to transform response: %v", err)
+		if relayNonStreamTimeout > 0 && isTimeoutError(ctx.Err()) {
+			return upstreamNonStreamTimeoutError()
+		}
 		return fmt.Errorf("failed to transform outbound response: %w", err)
 	}
 

@@ -65,6 +65,9 @@ func (o *MessageOutbound) TransformRequest(ctx context.Context, request *model.I
 	}
 	req.Header.Set("Anthropic-Version", "2023-06-01")
 	req.Header.Set("X-API-Key", key)
+	if beta := findHeaderValue(request, "Anthropic-Beta"); beta != "" {
+		req.Header.Set("Anthropic-Beta", beta)
+	}
 
 	// Parse and set URL
 	parsedUrl, err := url.Parse(strings.TrimSuffix(baseUrl, "/"))
@@ -80,6 +83,21 @@ func (o *MessageOutbound) TransformRequest(ctx context.Context, request *model.I
 	req.URL = parsedUrl
 
 	return req, nil
+}
+
+func findHeaderValue(request *model.InternalLLMRequest, key string) string {
+	if request == nil {
+		return ""
+	}
+	lookup := strings.ToLower(key)
+	if request.TransformerMetadata != nil {
+		for k, v := range request.TransformerMetadata {
+			if strings.ToLower(k) == lookup {
+				return v
+			}
+		}
+	}
+	return ""
 }
 
 func rewriteAnthropicMessagesRequestBody(raw []byte, modelName string, stream *bool) ([]byte, error) {
@@ -114,7 +132,7 @@ func (o *MessageOutbound) TransformResponse(ctx context.Context, response *http.
 	}
 
 	if len(body) == 0 {
-		return nil, fmt.Errorf("response body is empty")
+		return nil, fmt.Errorf("upstream response body is empty")
 	}
 
 	// Check for error response
@@ -335,6 +353,9 @@ func convertToAnthropicRequest(req *model.InternalLLMRequest) *anthropicModel.Me
 	if len(req.Tools) > 0 {
 		result.Tools = convertTools(req.Tools)
 	}
+	if toolChoice := convertToolChoice(req.ToolChoice, req.ParallelToolCalls, len(result.Tools) > 0); toolChoice != nil {
+		result.ToolChoice = toolChoice
+	}
 
 	// Convert stop sequences
 	if req.Stop != nil {
@@ -380,7 +401,7 @@ func resolveMaxTokens(req *model.InternalLLMRequest) int64 {
 func convertSystemPrompt(req *model.InternalLLMRequest) *anthropicModel.SystemPrompt {
 	var systemMessages []model.Message
 	for _, msg := range req.Messages {
-		if msg.Role == "system" {
+		if msg.Role == "system" || msg.Role == "developer" {
 			systemMessages = append(systemMessages, msg)
 		}
 	}
@@ -417,15 +438,39 @@ func convertMessages(req *model.InternalLLMRequest) []anthropicModel.MessagePara
 	processedIndexes := make(map[int]bool)
 
 	for _, msg := range req.Messages {
-		if msg.Role == "system" {
+		if msg.Role == "system" || msg.Role == "developer" {
 			continue
 		}
 
 		converted := convertSingleMessage(msg, req.Messages, processedIndexes)
-		messages = append(messages, converted...)
+		for _, convertedMsg := range converted {
+			// Anthropic API 要求消息角色必须交替出现（user/assistant/user/assistant）。
+			// 当 OpenAI 格式的多个连续 tool 消息被各自转换为独立的 user 消息时，
+			// 会产生连续的同角色消息，需要合并以避免 "Improperly formed request" 错误。
+			if n := len(messages); n > 0 && messages[n-1].Role == convertedMsg.Role {
+				last := &messages[n-1]
+				last.Content = anthropicModel.MessageContent{
+					MultipleContent: append(contentToBlocks(last.Content), contentToBlocks(convertedMsg.Content)...),
+				}
+			} else {
+				messages = append(messages, convertedMsg)
+			}
+		}
 	}
 
 	return messages
+}
+
+// contentToBlocks 将 MessageContent 统一展开为 MessageContentBlock 切片。
+func contentToBlocks(c anthropicModel.MessageContent) []anthropicModel.MessageContentBlock {
+	if len(c.MultipleContent) > 0 {
+		// 返回副本，避免后续 append 污染原 slice
+		return append([]anthropicModel.MessageContentBlock(nil), c.MultipleContent...)
+	}
+	if c.Content != nil && *c.Content != "" {
+		return []anthropicModel.MessageContentBlock{{Type: "text", Text: c.Content}}
+	}
+	return nil
 }
 
 func convertSingleMessage(msg model.Message, allMessages []model.Message, processedIndexes map[int]bool) []anthropicModel.MessageParam {
@@ -480,14 +525,7 @@ func convertToolMessage(msg model.Message, allMessages []model.Message, processe
 	// original Anthropic request may also include additional user content alongside tool_result.
 	if userMsg := findUserMessageByIndex(allMessages, *msg.MessageIndex); userMsg != nil {
 		userContent := buildMessageContent(*userMsg)
-		if len(userContent.MultipleContent) > 0 {
-			contentBlocks = append(contentBlocks, userContent.MultipleContent...)
-		} else if userContent.Content != nil && *userContent.Content != "" {
-			contentBlocks = append(contentBlocks, anthropicModel.MessageContentBlock{
-				Type: "text",
-				Text: userContent.Content,
-			})
-		}
+		contentBlocks = append(contentBlocks, contentToBlocks(userContent)...)
 	}
 
 	processedIndexes[*msg.MessageIndex] = true
@@ -739,6 +777,43 @@ func convertTools(tools []model.Tool) []anthropicModel.Tool {
 			CacheControl: convertCacheControl(tool.CacheControl),
 		})
 	}
+	return result
+}
+
+func convertToolChoice(tc *model.ToolChoice, parallelToolCalls *bool, hasTools bool) *anthropicModel.ToolChoice {
+	if !hasTools {
+		return nil
+	}
+
+	var result *anthropicModel.ToolChoice
+	if tc != nil {
+		if tc.ToolChoice != nil {
+			switch strings.ToLower(*tc.ToolChoice) {
+			case "auto":
+				result = &anthropicModel.ToolChoice{Type: "auto"}
+			case "none":
+				result = &anthropicModel.ToolChoice{Type: "none"}
+			case "required":
+				result = &anthropicModel.ToolChoice{Type: "any"}
+			}
+		} else if tc.NamedToolChoice != nil && tc.NamedToolChoice.Type == "function" {
+			name := tc.NamedToolChoice.Function.Name
+			result = &anthropicModel.ToolChoice{Type: "tool", Name: &name}
+		}
+	}
+
+	if result == nil {
+		if parallelToolCalls == nil {
+			return nil
+		}
+		result = &anthropicModel.ToolChoice{Type: "auto"}
+	}
+
+	if parallelToolCalls != nil {
+		disableParallel := !*parallelToolCalls
+		result.DisableParallelToolUse = &disableParallel
+	}
+
 	return result
 }
 
