@@ -31,6 +31,13 @@ var startCmd = &cobra.Command{
 			return
 		}
 		shutdown.Register(db.Close)
+		if status, err := db.EnsureSQLiteRuntimePragmas(cmd.Context()); err != nil {
+			log.Errorf("sqlite runtime pragma check error: %v", err)
+			return
+		} else if status != nil {
+			log.Infof("sqlite runtime status: journal_mode=%s auto_vacuum=%s(%d) wal_autocheckpoint=%d freelist_count=%d wal_size_bytes=%d",
+				status.JournalMode, status.AutoVacuumMode, status.AutoVacuum, status.WALAutoCheckpoint, status.FreelistCount, status.WALSizeBytes)
+		}
 
 		if err := op.InitCache(); err != nil {
 			log.Errorf("cache init error: %v", err)
@@ -57,6 +64,5 @@ var startCmd = &cobra.Command{
 }
 
 func init() {
-	startCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is ./data/config.json)")
 	rootCmd.AddCommand(startCmd)
 }

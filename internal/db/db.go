@@ -15,6 +15,7 @@ import (
 )
 
 var db *gorm.DB
+var sqlitePath string
 
 func InitDB(dbType, dsn string, debug bool) error {
 	var err error
@@ -25,10 +26,13 @@ func InitDB(dbType, dsn string, debug bool) error {
 
 	switch dbType {
 	case "sqlite":
+		sqlitePath = dsn
 		db, err = initSQLite(dsn, &gormConfig)
 	case "mysql":
+		sqlitePath = ""
 		db, err = initMySQL(dsn, &gormConfig)
 	case "postgres", "postgresql":
+		sqlitePath = ""
 		db, err = initPostgres(dsn, &gormConfig)
 	default:
 		return fmt.Errorf("unsupported database type: %s", dbType)
