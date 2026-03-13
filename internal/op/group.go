@@ -344,7 +344,7 @@ func GroupItemBatchDelByChannelAndModels(keys []model.GroupIDAndLLMName, ctx con
 
 func GroupItemList(groupID int, ctx context.Context) ([]model.GroupItem, error) {
 	var items []model.GroupItem
-	if err := db.GetDB().WithContext(ctx).
+	if err := db.GetReadDB().WithContext(ctx).
 		Where("group_id = ?", groupID).
 		Order("priority ASC").
 		Find(&items).Error; err != nil {
@@ -355,7 +355,7 @@ func GroupItemList(groupID int, ctx context.Context) ([]model.GroupItem, error) 
 
 func groupRefreshCache(ctx context.Context) error {
 	groups := []model.Group{}
-	if err := db.GetDB().WithContext(ctx).
+	if err := db.GetReadDB().WithContext(ctx).
 		Preload("Items").
 		Find(&groups).Error; err != nil {
 		return err
@@ -369,7 +369,7 @@ func groupRefreshCache(ctx context.Context) error {
 
 func groupRefreshCacheByID(id int, ctx context.Context) error {
 	var group model.Group
-	if err := db.GetDB().WithContext(ctx).
+	if err := db.GetReadDB().WithContext(ctx).
 		Preload("Items").
 		First(&group, id).Error; err != nil {
 		return err
@@ -384,7 +384,7 @@ func groupRefreshCacheByIDs(ids []int, ctx context.Context) error {
 		return nil
 	}
 	var groups []model.Group
-	if err := db.GetDB().WithContext(ctx).
+	if err := db.GetReadDB().WithContext(ctx).
 		Preload("Items").
 		Where("id IN ?", ids).
 		Find(&groups).Error; err != nil {

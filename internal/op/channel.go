@@ -361,7 +361,7 @@ func ChannelGet(id int, ctx context.Context) (*model.Channel, error) {
 
 func channelRefreshCache(ctx context.Context) error {
 	channels := []model.Channel{}
-	if err := db.GetDB().WithContext(ctx).
+	if err := db.GetReadDB().WithContext(ctx).
 		Preload("Keys").
 		Preload("Stats").
 		Find(&channels).Error; err != nil {
@@ -392,7 +392,7 @@ func channelRefreshCacheByID(id int, ctx context.Context) error {
 		}
 	}
 	var channel model.Channel
-	if err := db.GetDB().WithContext(ctx).
+	if err := db.GetReadDB().WithContext(ctx).
 		Preload("Keys").
 		Preload("Stats").
 		First(&channel, id).Error; err != nil {

@@ -389,7 +389,7 @@ func StatsHourlyGet() []model.StatsHourly {
 
 func StatsGetDaily(ctx context.Context) ([]model.StatsDaily, error) {
 	var statsDaily []model.StatsDaily
-	result := db.GetDB().WithContext(ctx).Find(&statsDaily)
+	result := db.GetReadDB().WithContext(ctx).Find(&statsDaily)
 	if result.Error != nil {
 		return nil, result.Error
 	}
@@ -397,7 +397,7 @@ func StatsGetDaily(ctx context.Context) ([]model.StatsDaily, error) {
 }
 
 func statsRefreshCache(ctx context.Context) error {
-	dbConn := db.GetDB().WithContext(ctx)
+	dbConn := db.GetReadDB().WithContext(ctx)
 	today := time.Now().Format("20060102")
 
 	var loadedDaily model.StatsDaily

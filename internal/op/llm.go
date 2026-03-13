@@ -106,7 +106,7 @@ func LLMGet(name string) (model.LLMPrice, error) {
 
 func llmRefreshCache(ctx context.Context) error {
 	models := []model.LLMInfo{}
-	if err := db.GetDB().WithContext(ctx).Find(&models).Error; err != nil {
+	if err := db.GetReadDB().WithContext(ctx).Find(&models).Error; err != nil {
 		return err
 	}
 	for _, model := range models {

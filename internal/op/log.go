@@ -302,7 +302,7 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 				dbOffset = offset - cacheCount
 			}
 
-			query := db.GetDB().WithContext(ctx)
+			query := db.GetReadDB().WithContext(ctx)
 			if hasTimeFilter {
 				query = query.Where("time >= ? AND time <= ?", *startTime, *endTime)
 			}
