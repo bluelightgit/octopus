@@ -44,7 +44,8 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	requestModel := internalRequest.Model
 	apiKeyID := c.GetInt("api_key_id")
 
-	group, err := op.GroupGetMap(requestModel, c.Request.Context())
+	// 获取通道分组
+	group, err := op.GroupGetEnabledMap(requestModel, c.Request.Context())
 	if err != nil {
 		resp.Error(c, http.StatusNotFound, "model not found")
 		return
@@ -917,6 +918,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		}
 	}
 }
+
 func (ra *relayAttempt) shouldPassthroughSSE() bool {
 	if ra == nil || ra.internalRequest == nil || ra.channel == nil {
 		return false
