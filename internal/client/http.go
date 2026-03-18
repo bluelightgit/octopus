@@ -34,6 +34,21 @@ func init() {
 	}
 }
 
+func ReloadRuntimeSettings() {
+	timeout := responseHeaderTimeout
+	if v, err := op.SettingGetInt(model.SettingKeyRelayUpstreamHeaderTimeoutMS); err == nil && v >= 0 {
+		timeout = time.Duration(v) * time.Millisecond
+	}
+
+	clientLock.Lock()
+	defer clientLock.Unlock()
+
+	responseHeaderTimeout = timeout
+	systemDirectClient = nil
+	systemProxyClient = nil
+	systemProxyURL = ""
+}
+
 // GetHTTPClientSystemProxy returns a cached http.Client.
 // - useProxy=false: bypass proxy
 // - useProxy=true: use proxy settings from system/app settings (setting key: proxy_url)

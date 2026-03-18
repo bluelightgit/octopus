@@ -15,6 +15,7 @@ import (
 
 const relayLogMaxSize = 20
 const relayLogMaxSizeNoDB = 100 // 当不保存到数据库时，允许更大的缓存用于实时查询
+const relayLogCleanupBatchSize = 2000
 
 const (
 	sqliteIncrementalVacuumMinFreePages = 1024
@@ -166,6 +167,9 @@ func RelayLogSaveDBTask(ctx context.Context) error {
 		if err := relayLogCleanup(ctx); err != nil {
 			return err
 		}
+		if _, err := db.SQLiteWALCheckpointIfNeeded(ctx, db.SQLiteWALCheckpointTriggerSize); err != nil {
+			return err
+		}
 		return sqliteIncrementalVacuumIfNeeded(ctx)
 	}
 
@@ -191,7 +195,24 @@ func relayLogCleanup(ctx context.Context) error {
 	}
 
 	cutoffTime := time.Now().Add(-time.Duration(keepPeriod) * 24 * time.Hour).Unix()
-	return db.GetDB().WithContext(ctx).Where("time < ?", cutoffTime).Delete(&model.RelayLog{}).Error
+	dbConn := db.GetDB().WithContext(ctx)
+	for {
+		result := dbConn.Exec(`DELETE FROM relay_logs WHERE id IN (
+			SELECT id FROM relay_logs WHERE time < ? ORDER BY time ASC LIMIT ?
+		)`, cutoffTime, relayLogCleanupBatchSize)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected < relayLogCleanupBatchSize {
+			break
+		}
+	}
+	if db.IsSQLite() {
+		if err := dbConn.Exec("PRAGMA optimize;").Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func sqliteIncrementalVacuumIfNeeded(ctx context.Context) error {
@@ -200,6 +221,9 @@ func sqliteIncrementalVacuumIfNeeded(ctx context.Context) error {
 	}
 
 	dbConn := db.GetDB().WithContext(ctx)
+	if _, err := db.SQLiteWALCheckpoint(ctx, db.SQLiteCheckpointModePassive); err != nil {
+		return err
+	}
 
 	var pageCount int
 	if err := dbConn.Raw("PRAGMA page_count;").Row().Scan(&pageCount); err != nil {
@@ -222,9 +246,6 @@ func sqliteIncrementalVacuumIfNeeded(ctx context.Context) error {
 
 	log.Debugf("sqlite incremental vacuum triggered, page_count=%d, freelist_count=%d, free_ratio=%.2f", pageCount, freelistCount, freeRatio)
 	if err := dbConn.Exec("PRAGMA incremental_vacuum;").Error; err != nil {
-		return err
-	}
-	if err := dbConn.Exec("PRAGMA wal_checkpoint(TRUNCATE);").Error; err != nil {
 		return err
 	}
 	return nil
@@ -281,7 +302,7 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 				dbOffset = offset - cacheCount
 			}
 
-			query := db.GetDB().WithContext(ctx)
+			query := db.GetReadDB().WithContext(ctx)
 			if hasTimeFilter {
 				query = query.Where("time >= ? AND time <= ?", *startTime, *endTime)
 			}
@@ -302,6 +323,9 @@ func RelayLogClear(ctx context.Context) error {
 	relayLogCache = make([]model.RelayLog, 0, relayLogMaxSize)
 	relayLogCacheLock.Unlock()
 	if err := db.GetDB().WithContext(ctx).Where("1 = 1").Delete(&model.RelayLog{}).Error; err != nil {
+		return err
+	}
+	if _, err := db.SQLiteWALCheckpoint(ctx, db.SQLiteCheckpointModeTruncate); err != nil {
 		return err
 	}
 	return sqliteIncrementalVacuumIfNeeded(ctx)

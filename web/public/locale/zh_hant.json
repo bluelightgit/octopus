@@ -163,6 +163,23 @@
             "label": "統計保存週期（分鐘）",
             "placeholder": "請輸入週期（分鐘）"
         },
+        "relayUpstreamHeaderTimeout": {
+            "label": "上游響應頭逾時（毫秒）",
+            "placeholder": "請輸入逾時時間（毫秒）"
+        },
+        "relayNonStreamTimeout": {
+            "label": "非串流總逾時（毫秒）",
+            "placeholder": "請輸入逾時時間（毫秒）"
+        },
+        "relayStreamIdleTimeout": {
+            "label": "串流空閒逾時（毫秒）",
+            "placeholder": "請輸入逾時時間（毫秒）"
+        },
+        "relayResponsesPreludeTimeout": {
+            "label": "Responses prelude 兜底逾時（毫秒）",
+            "placeholder": "請輸入逾時時間（毫秒）",
+            "hint": "僅在分組首 token 逾時未設定時生效，0 表示停用"
+        },
         "corsAllowOrigins": {
             "label": "CORS 跨網域白名單",
             "hint": "為空禁止跨網域，* 允許所有",
@@ -319,7 +336,29 @@
             "updateNow": "立即更新",
             "updating": "更新中...",
             "updateSuccess": "更新成功，服務即將重啟",
-            "updateFailed": "更新失敗"
+            "updateFailed": "更新失敗",
+            "sqlite": {
+                "title": "SQLite 執行狀態",
+                "description": "用於檢查目前資料庫是否已套用 WAL 與增量回收相關設定。",
+                "refresh": "重新整理狀態",
+                "loading": "正在檢查 SQLite 狀態...",
+                "loadFailed": "SQLite 狀態載入失敗，請稍後再試。",
+                "notSqlite": "目前實例未使用 SQLite 資料庫。",
+                "repairRequired": "目前資料庫仍需執行一次 repair/vacuum 才能啟用增量回收。",
+                "repairHint": "請在服務停止後執行 `octopus sqlite repair`，再重新啟動服務。",
+                "journalMode": "日誌模式",
+                "autoVacuumMode": "自動回收模式",
+                "walAutoCheckpoint": "WAL 自動檢查點",
+                "walSize": "WAL 檔案大小",
+                "pageCount": "總頁數",
+                "freelistCount": "空閒頁數",
+                "dbPath": "資料庫路徑",
+                "checkpoint": "執行 checkpoint",
+                "checkpointRunning": "執行中...",
+                "checkpointSuccess": "WAL checkpoint 已完成",
+                "checkpointSuccessDetail": "目前 WAL 大小 {walSize}，busy={busyFrames}，已 checkpoint={checkpointedFrames}",
+                "checkpointFailed": "執行 WAL checkpoint 失敗，請稍後再試。"
+            }
         },
         "log": {
             "title": "日誌設定",
@@ -460,7 +499,17 @@
             "retryDetails": "重試詳情",
             "attempts": "次嘗試",
             "success": "成功",
-            "failed": "失敗"
+            "failed": "失敗",
+            "streamDiagnostics": "串流診斷",
+            "upstreamFirstEvent": "首個上游事件",
+            "clientFirstWrite": "首次客戶端寫出",
+            "upstreamEvents": "上游事件數",
+            "clientChunks": "客戶端分塊數",
+            "terminalSeen": "是否見到終止事件",
+            "failureStage": "失敗階段",
+            "yes": "是",
+            "no": "否",
+            "notAvailable": "無"
         }
     },
     "channel": {

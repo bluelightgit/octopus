@@ -1,21 +1,53 @@
 'use client';
 
 import { useTranslations } from 'next-intl';
-import { Info, Tag, Github, RefreshCw, AlertTriangle, Download, Loader2 } from 'lucide-react';
+import { Info, Tag, Github, AlertTriangle, Download, Loader2, Database, RefreshCw } from 'lucide-react';
 import { APP_VERSION, GITHUB_REPO } from '@/lib/info';
 import { useLatestInfo, useNowVersion, useUpdateCore } from '@/api/endpoints/update';
+import { useSQLiteCheckpoint, useSQLiteStatus } from '@/api/endpoints/setting';
 import { Button } from '@/components/ui/button';
 import { toast } from '@/components/common/Toast';
 import { isOctopusCacheName, isFontCacheName, SW_MESSAGE_TYPE } from '@/lib/sw';
+
+function formatBytes(bytes?: number) {
+    if (typeof bytes !== 'number' || Number.isNaN(bytes) || bytes < 0) {
+        return '--';
+    }
+    if (bytes === 0) {
+        return '0 B';
+    }
+
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let value = bytes;
+    let unitIndex = 0;
+
+    while (value >= 1024 && unitIndex < units.length - 1) {
+        value /= 1024;
+        unitIndex += 1;
+    }
+
+    const digits = value >= 100 || unitIndex === 0 ? 0 : value >= 10 ? 1 : 2;
+    return `${value.toFixed(digits)} ${units[unitIndex]}`;
+}
+
+function formatCount(value?: number) {
+    if (typeof value !== 'number' || Number.isNaN(value)) {
+        return '--';
+    }
+    return new Intl.NumberFormat().format(value);
+}
 
 export function SettingInfo() {
     const t = useTranslations('setting');
     const latestInfoQuery = useLatestInfo();
     const nowVersionQuery = useNowVersion();
     const updateCore = useUpdateCore();
+    const sqliteStatusQuery = useSQLiteStatus();
+    const sqliteCheckpoint = useSQLiteCheckpoint();
 
     const backendNowVersion = nowVersionQuery.data || '';
     const latestVersion = latestInfoQuery.data?.tag_name || '';
+    const sqliteStatus = sqliteStatusQuery.data;
 
     // 前端版本与后端当前版本不一致 → 浏览器缓存问题
     const isCacheMismatch = !!backendNowVersion && backendNowVersion !== APP_VERSION;
@@ -63,6 +95,38 @@ export function SettingInfo() {
             }
         });
     };
+
+    const handleSQLiteCheckpoint = () => {
+        sqliteCheckpoint.mutate(undefined, {
+            onSuccess: (result) => {
+                if (!result.is_sqlite) {
+                    toast.warning(t('info.sqlite.notSqlite'));
+                    return;
+                }
+                toast.success(t('info.sqlite.checkpointSuccess'), {
+                    description: t('info.sqlite.checkpointSuccessDetail', {
+                        walSize: formatBytes(result.wal_size_bytes_after),
+                        busyFrames: formatCount(result.busy_frames),
+                        checkpointedFrames: formatCount(result.checkpointed_frames),
+                    }),
+                });
+                sqliteStatusQuery.refetch();
+            },
+            onError: () => {
+                toast.error(t('info.sqlite.checkpointFailed'));
+            },
+        });
+    };
+
+    const sqliteRows = sqliteStatus?.is_sqlite ? [
+        { label: t('info.sqlite.journalMode'), value: sqliteStatus.journal_mode || t('info.unknown') },
+        { label: t('info.sqlite.autoVacuumMode'), value: sqliteStatus.auto_vacuum_mode || t('info.unknown') },
+        { label: t('info.sqlite.walAutoCheckpoint'), value: formatCount(sqliteStatus.wal_auto_checkpoint) },
+        { label: t('info.sqlite.walSize'), value: formatBytes(sqliteStatus.wal_size_bytes) },
+        { label: t('info.sqlite.pageCount'), value: formatCount(sqliteStatus.page_count) },
+        { label: t('info.sqlite.freelistCount'), value: formatCount(sqliteStatus.freelist_count) },
+        { label: t('info.sqlite.dbPath'), value: sqliteStatus.db_path || '--', mono: true },
+    ] : [];
 
     return (
         <div className="rounded-3xl border border-border bg-card p-6 space-y-5">
@@ -117,6 +181,84 @@ export function SettingInfo() {
                         </code>
                     )}
                 </div>
+            </div>
+
+            <div className="rounded-2xl border border-border/70 bg-background/70 p-4 space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                        <Database className="h-5 w-5 text-muted-foreground" />
+                        <div>
+                            <p className="text-sm font-medium text-card-foreground">{t('info.sqlite.title')}</p>
+                            <p className="text-xs text-muted-foreground">{t('info.sqlite.description')}</p>
+                        </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={handleSQLiteCheckpoint}
+                            disabled={sqliteCheckpoint.isPending || sqliteStatusQuery.isLoading || !sqliteStatus?.is_sqlite}
+                            className="rounded-xl"
+                        >
+                            <Database className={sqliteCheckpoint.isPending ? 'size-4 animate-pulse' : 'size-4'} />
+                            {sqliteCheckpoint.isPending ? t('info.sqlite.checkpointRunning') : t('info.sqlite.checkpoint')}
+                        </Button>
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => sqliteStatusQuery.refetch()}
+                            disabled={sqliteStatusQuery.isFetching}
+                            className="rounded-xl"
+                        >
+                            <RefreshCw className={sqliteStatusQuery.isFetching ? 'size-4 animate-spin' : 'size-4'} />
+                            {t('info.sqlite.refresh')}
+                        </Button>
+                    </div>
+                </div>
+
+                {sqliteStatusQuery.isLoading ? (
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <Loader2 className="size-4 animate-spin" />
+                        {t('info.sqlite.loading')}
+                    </div>
+                ) : sqliteStatusQuery.isError ? (
+                    <div className="rounded-xl border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                        {t('info.sqlite.loadFailed')}
+                    </div>
+                ) : !sqliteStatus?.is_sqlite ? (
+                    <div className="rounded-xl border border-border/70 bg-card px-3 py-2 text-sm text-muted-foreground">
+                        {t('info.sqlite.notSqlite')}
+                    </div>
+                ) : (
+                    <>
+                        {sqliteStatus.auto_vacuum_needs_vacuum && (
+                            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 space-y-1">
+                                <div className="flex items-start gap-3">
+                                    <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
+                                    <div className="space-y-1">
+                                        <p className="text-sm font-medium text-amber-700 dark:text-amber-300">
+                                            {t('info.sqlite.repairRequired')}
+                                        </p>
+                                        <p className="text-xs text-muted-foreground">
+                                            {t('info.sqlite.repairHint')}
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        <div className="grid gap-3 md:grid-cols-2">
+                            {sqliteRows.map((row) => (
+                                <div key={row.label} className="rounded-2xl border border-border/60 bg-card px-3 py-3">
+                                    <p className="text-xs text-muted-foreground">{row.label}</p>
+                                    <p className={row.mono ? 'mt-1 break-all font-mono text-sm text-card-foreground' : 'mt-1 text-sm font-medium text-card-foreground'}>
+                                        {row.value}
+                                    </p>
+                                </div>
+                            ))}
+                        </div>
+                    </>
+                )}
             </div>
 
             {/* 浏览器缓存问题警告 */}
@@ -176,4 +318,3 @@ export function SettingInfo() {
         </div>
     );
 }
-

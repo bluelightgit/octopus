@@ -11,6 +11,30 @@ export interface Setting {
     value: string;
 }
 
+export interface SQLiteStatus {
+    is_sqlite: boolean;
+    db_path?: string;
+    journal_mode?: string;
+    auto_vacuum?: number;
+    auto_vacuum_mode?: string;
+    wal_auto_checkpoint?: number;
+    page_count?: number;
+    freelist_count?: number;
+    wal_size_bytes?: number;
+    auto_vacuum_needs_vacuum?: boolean;
+}
+
+export interface SQLiteCheckpointResult {
+    is_sqlite: boolean;
+    mode?: string;
+    busy_frames?: number;
+    log_frames?: number;
+    checkpointed_frames?: number;
+    wal_size_bytes_after?: number;
+    journal_mode_after?: string;
+    auto_vacuum_mode_after?: string;
+}
+
 export const SettingKey = {
     ProxyURL: 'proxy_url',
     StatsSaveInterval: 'stats_save_interval',
@@ -19,6 +43,10 @@ export const SettingKey = {
     RelayLogKeepEnabled: 'relay_log_keep_enabled',
     RelayLogKeepPeriod: 'relay_log_keep_period',
     CORSAllowOrigins: 'cors_allow_origins',
+    RelayUpstreamHeaderTimeout: 'relay_upstream_header_timeout_ms',
+    RelayNonStreamTimeout: 'relay_non_stream_timeout_ms',
+    RelayStreamIdleTimeout: 'relay_stream_idle_timeout_ms',
+    RelayResponsesPreludeTimeout: 'relay_responses_prelude_timeout_ms',
     CircuitBreakerThreshold: 'circuit_breaker_threshold',
     CircuitBreakerCooldown: 'circuit_breaker_cooldown',
     CircuitBreakerMaxCooldown: 'circuit_breaker_max_cooldown',
@@ -43,6 +71,33 @@ export function useSettingList() {
         },
         refetchInterval: 30000,
         refetchOnMount: 'always',
+    });
+}
+
+export function useSQLiteStatus() {
+    return useQuery({
+        queryKey: ['settings', 'sqlite-status'],
+        queryFn: async () => {
+            return apiClient.get<SQLiteStatus>('/api/v1/setting/sqlite-status');
+        },
+        refetchInterval: 30000,
+        refetchOnMount: 'always',
+    });
+}
+
+export function useSQLiteCheckpoint() {
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: async () => {
+            return apiClient.post<SQLiteCheckpointResult>('/api/v1/setting/sqlite-checkpoint');
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['settings', 'sqlite-status'] });
+        },
+        onError: (error) => {
+            logger.error('SQLite checkpoint 失败:', error);
+        },
     });
 }
 
@@ -209,4 +264,3 @@ export function useImportDB() {
         },
     });
 }
-

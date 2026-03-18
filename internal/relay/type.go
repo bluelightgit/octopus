@@ -8,6 +8,7 @@ import (
 
 	"github.com/bestruirui/octopus/internal/conf"
 	dbmodel "github.com/bestruirui/octopus/internal/model"
+	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/relay/balancer"
 	"github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/gin-gonic/gin"
@@ -20,8 +21,9 @@ import (
 var maxSSEEventSize = 32 * 1024 * 1024
 
 var (
-	relayNonStreamTimeout  = 5 * time.Minute
-	relayStreamIdleTimeout = 90 * time.Second
+	relayNonStreamTimeout        = 5 * time.Minute
+	relayStreamIdleTimeout       = 90 * time.Second
+	relayResponsesPreludeTimeout = 30 * time.Second
 )
 
 func init() {
@@ -39,6 +41,23 @@ func init() {
 		if v, err := strconv.Atoi(raw); err == nil && v >= 0 {
 			relayStreamIdleTimeout = time.Duration(v) * time.Millisecond
 		}
+	}
+	if raw := strings.TrimSpace(os.Getenv(strings.ToUpper(conf.APP_NAME) + "_RELAY_RESPONSES_PRELUDE_TIMEOUT_MS")); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v >= 0 {
+			relayResponsesPreludeTimeout = time.Duration(v) * time.Millisecond
+		}
+	}
+}
+
+func ReloadRuntimeSettings() {
+	if v, err := op.SettingGetInt(dbmodel.SettingKeyRelayNonStreamTimeoutMS); err == nil && v >= 0 {
+		relayNonStreamTimeout = time.Duration(v) * time.Millisecond
+	}
+	if v, err := op.SettingGetInt(dbmodel.SettingKeyRelayStreamIdleTimeoutMS); err == nil && v >= 0 {
+		relayStreamIdleTimeout = time.Duration(v) * time.Millisecond
+	}
+	if v, err := op.SettingGetInt(dbmodel.SettingKeyRelayResponsesPreludeTimeoutMS); err == nil && v >= 0 {
+		relayResponsesPreludeTimeout = time.Duration(v) * time.Millisecond
 	}
 }
 

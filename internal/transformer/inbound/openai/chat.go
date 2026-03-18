@@ -131,6 +131,25 @@ func (i *ChatInbound) TransformStream(ctx context.Context, stream *model.Interna
 	return []byte("data: " + string(body) + "\n\n"), nil
 }
 
+func (i *ChatInbound) EmitStreamFailure(ctx context.Context, cause error) ([]byte, error) {
+	finishReason := "error"
+	chunk, err := i.TransformStream(ctx, &model.InternalLLMResponse{
+		Object: "chat.completion.chunk",
+		Choices: []model.Choice{{
+			Index:        0,
+			FinishReason: &finishReason,
+		}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	done, err := i.TransformStream(ctx, &model.InternalLLMResponse{Object: "[DONE]"})
+	if err != nil {
+		return nil, err
+	}
+	return append(chunk, done...), nil
+}
+
 // GetInternalResponse returns the complete internal response for logging, statistics, etc.
 // For streaming: aggregates all stored stream chunks into a complete response
 // For non-streaming: returns the stored response

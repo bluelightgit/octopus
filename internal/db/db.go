@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -15,6 +16,8 @@ import (
 )
 
 var db *gorm.DB
+var dbRead *gorm.DB
+var sqlitePath string
 
 func InitDB(dbType, dsn string, debug bool) error {
 	var err error
@@ -25,10 +28,18 @@ func InitDB(dbType, dsn string, debug bool) error {
 
 	switch dbType {
 	case "sqlite":
+		sqlitePath = dsn
 		db, err = initSQLite(dsn, &gormConfig)
+		if err == nil {
+			dbRead, err = initSQLite(dsn, &gormConfig)
+		}
 	case "mysql":
+		sqlitePath = ""
+		dbRead = nil
 		db, err = initMySQL(dsn, &gormConfig)
 	case "postgres", "postgresql":
+		sqlitePath = ""
+		dbRead = nil
 		db, err = initPostgres(dsn, &gormConfig)
 	default:
 		return fmt.Errorf("unsupported database type: %s", dbType)
@@ -42,11 +53,15 @@ func InitDB(dbType, dsn string, debug bool) error {
 	if err != nil {
 		return err
 	}
+	configureDBPools(dbType, sqlDB, false)
 
-	sqlDB.SetMaxIdleConns(10)
-	sqlDB.SetMaxOpenConns(100)
-	sqlDB.SetConnMaxLifetime(time.Hour)
-	sqlDB.SetConnMaxIdleTime(10 * time.Minute)
+	if dbRead != nil {
+		readSQLDB, err := dbRead.DB()
+		if err != nil {
+			return err
+		}
+		configureDBPools(dbType, readSQLDB, true)
+	}
 
 	if err := migrate.BeforeAutoMigrate(db); err != nil {
 		return err
@@ -115,13 +130,54 @@ func Close() error {
 	if err != nil {
 		return err
 	}
-	return sqlDB.Close()
+	var closeErr error
+	if err := sqlDB.Close(); err != nil {
+		closeErr = err
+	}
+	if dbRead != nil {
+		if readSQLDB, err := dbRead.DB(); err == nil && readSQLDB != sqlDB {
+			if err := readSQLDB.Close(); err != nil && closeErr == nil {
+				closeErr = err
+			}
+		}
+	}
+	return closeErr
 }
 
 func GetDB() *gorm.DB {
 	return db
 }
 
+func GetReadDB() *gorm.DB {
+	if dbRead != nil {
+		return dbRead
+	}
+	return db
+}
+
 func IsSQLite() bool {
 	return db != nil && db.Dialector != nil && db.Dialector.Name() == "sqlite"
+}
+
+func configureDBPools(dbType string, sqlDB *sql.DB, readOnly bool) {
+	if sqlDB == nil {
+		return
+	}
+	if dbType == "sqlite" {
+		if readOnly {
+			sqlDB.SetMaxIdleConns(4)
+			sqlDB.SetMaxOpenConns(8)
+		} else {
+			sqlDB.SetMaxIdleConns(1)
+			sqlDB.SetMaxOpenConns(1)
+		}
+		sqlDB.SetConnMaxLifetime(30 * time.Minute)
+		sqlDB.SetConnMaxIdleTime(5 * time.Minute)
+		return
+	}
+
+	sqlDB.SetMaxIdleConns(10)
+	sqlDB.SetMaxOpenConns(100)
+	sqlDB.SetConnMaxLifetime(time.Hour)
+	sqlDB.SetConnMaxIdleTime(10 * time.Minute)
 }

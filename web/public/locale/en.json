@@ -163,6 +163,23 @@
             "label": "Stats Save Interval",
             "placeholder": "Enter interval in minutes"
         },
+        "relayUpstreamHeaderTimeout": {
+            "label": "Upstream Header Timeout (ms)",
+            "placeholder": "Enter timeout in milliseconds"
+        },
+        "relayNonStreamTimeout": {
+            "label": "Non-stream Total Timeout (ms)",
+            "placeholder": "Enter timeout in milliseconds"
+        },
+        "relayStreamIdleTimeout": {
+            "label": "Stream Idle Timeout (ms)",
+            "placeholder": "Enter timeout in milliseconds"
+        },
+        "relayResponsesPreludeTimeout": {
+            "label": "Responses Prelude Fallback Timeout (ms)",
+            "placeholder": "Enter timeout in milliseconds",
+            "hint": "Only applies when the group first token timeout is unset; 0 disables"
+        },
         "corsAllowOrigins": {
             "label": "CORS Allowed Origins",
             "hint": "Empty = deny all, * = allow all",
@@ -319,7 +336,29 @@
             "updateNow": "Update Now",
             "updating": "Updating...",
             "updateSuccess": "Update successful, service will restart shortly",
-            "updateFailed": "Update failed"
+            "updateFailed": "Update failed",
+            "sqlite": {
+                "title": "SQLite Runtime Status",
+                "description": "Checks whether WAL and incremental reclaim settings are active on the current database.",
+                "refresh": "Refresh",
+                "loading": "Inspecting SQLite runtime status...",
+                "loadFailed": "Failed to load SQLite status. Please try again later.",
+                "notSqlite": "This instance is not using SQLite.",
+                "repairRequired": "This database still needs a repair/vacuum run before incremental reclaim becomes active.",
+                "repairHint": "Stop the service, run `octopus sqlite repair`, and then start the service again.",
+                "journalMode": "Journal Mode",
+                "autoVacuumMode": "Auto Vacuum Mode",
+                "walAutoCheckpoint": "WAL Auto Checkpoint",
+                "walSize": "WAL File Size",
+                "pageCount": "Page Count",
+                "freelistCount": "Freelist Count",
+                "dbPath": "Database Path",
+                "checkpoint": "Run checkpoint",
+                "checkpointRunning": "Running...",
+                "checkpointSuccess": "WAL checkpoint completed",
+                "checkpointSuccessDetail": "Current WAL size {walSize}, busy={busyFrames}, checkpointed={checkpointedFrames}",
+                "checkpointFailed": "Failed to run WAL checkpoint. Please try again later."
+            }
         },
         "log": {
             "title": "Log Settings",
@@ -460,7 +499,17 @@
             "retryDetails": "Retry Details",
             "attempts": "attempts",
             "success": "Success",
-            "failed": "Failed"
+            "failed": "Failed",
+            "streamDiagnostics": "Stream Diagnostics",
+            "upstreamFirstEvent": "Upstream First Event",
+            "clientFirstWrite": "Client First Write",
+            "upstreamEvents": "Upstream Events",
+            "clientChunks": "Client Chunks",
+            "terminalSeen": "Terminal Seen",
+            "failureStage": "Failure Stage",
+            "yes": "Yes",
+            "no": "No",
+            "notAvailable": "N/A"
         }
     },
     "channel": {

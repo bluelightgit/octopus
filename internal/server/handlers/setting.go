@@ -8,8 +8,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bestruirui/octopus/internal/client"
+	"github.com/bestruirui/octopus/internal/db"
 	"github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
+	"github.com/bestruirui/octopus/internal/relay"
 	"github.com/bestruirui/octopus/internal/server/middleware"
 	"github.com/bestruirui/octopus/internal/server/resp"
 	"github.com/bestruirui/octopus/internal/server/router"
@@ -30,6 +33,14 @@ func init() {
 				Handle(setSetting),
 		).
 		AddRoute(
+			router.NewRoute("/sqlite-status", http.MethodGet).
+				Handle(getSQLiteStatus),
+		).
+		AddRoute(
+			router.NewRoute("/sqlite-checkpoint", http.MethodPost).
+				Handle(runSQLiteCheckpoint),
+		).
+		AddRoute(
 			router.NewRoute("/export", http.MethodGet).
 				Handle(exportDB),
 		).
@@ -37,6 +48,30 @@ func init() {
 			router.NewRoute("/import", http.MethodPost).
 				Handle(importDB),
 		)
+}
+
+type sqliteStatusResponse struct {
+	IsSQLite              bool   `json:"is_sqlite"`
+	DBPath                string `json:"db_path,omitempty"`
+	JournalMode           string `json:"journal_mode,omitempty"`
+	AutoVacuum            int    `json:"auto_vacuum,omitempty"`
+	AutoVacuumMode        string `json:"auto_vacuum_mode,omitempty"`
+	WALAutoCheckpoint     int    `json:"wal_auto_checkpoint,omitempty"`
+	PageCount             int    `json:"page_count,omitempty"`
+	FreelistCount         int    `json:"freelist_count,omitempty"`
+	WALSizeBytes          int64  `json:"wal_size_bytes,omitempty"`
+	AutoVacuumNeedsVacuum bool   `json:"auto_vacuum_needs_vacuum,omitempty"`
+}
+
+type sqliteCheckpointResponse struct {
+	IsSQLite            bool   `json:"is_sqlite"`
+	Mode                string `json:"mode,omitempty"`
+	BusyFrames          int    `json:"busy_frames,omitempty"`
+	LogFrames           int    `json:"log_frames,omitempty"`
+	CheckpointedFrames  int    `json:"checkpointed_frames,omitempty"`
+	WALSizeBytesAfter   int64  `json:"wal_size_bytes_after,omitempty"`
+	JournalModeAfter    string `json:"journal_mode_after,omitempty"`
+	AutoVacuumModeAfter string `json:"auto_vacuum_mode_after,omitempty"`
 }
 
 func getSettingList(c *gin.Context) {
@@ -62,6 +97,8 @@ func setSetting(c *gin.Context) {
 		resp.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+	client.ReloadRuntimeSettings()
+	relay.ReloadRuntimeSettings()
 	switch setting.Key {
 	case model.SettingKeyModelInfoUpdateInterval:
 		hours, err := strconv.Atoi(setting.Value)
@@ -79,6 +116,70 @@ func setSetting(c *gin.Context) {
 		task.Update(string(setting.Key), time.Duration(hours)*time.Hour)
 	}
 	resp.Success(c, setting)
+}
+
+func getSQLiteStatus(c *gin.Context) {
+	if !db.IsSQLite() {
+		resp.Success(c, sqliteStatusResponse{IsSQLite: false})
+		return
+	}
+
+	status, err := db.InspectSQLitePragmas(c.Request.Context())
+	if err != nil {
+		resp.Error(c, http.StatusInternalServerError, "failed to inspect sqlite runtime status: "+err.Error())
+		return
+	}
+	if status == nil {
+		resp.Success(c, sqliteStatusResponse{IsSQLite: false})
+		return
+	}
+
+	resp.Success(c, sqliteStatusResponse{
+		IsSQLite:              true,
+		DBPath:                status.DBPath,
+		JournalMode:           status.JournalMode,
+		AutoVacuum:            status.AutoVacuum,
+		AutoVacuumMode:        status.AutoVacuumMode,
+		WALAutoCheckpoint:     status.WALAutoCheckpoint,
+		PageCount:             status.PageCount,
+		FreelistCount:         status.FreelistCount,
+		WALSizeBytes:          status.WALSizeBytes,
+		AutoVacuumNeedsVacuum: status.AutoVacuumNeedsVacuum,
+	})
+}
+
+func runSQLiteCheckpoint(c *gin.Context) {
+	if !db.IsSQLite() {
+		resp.Success(c, sqliteCheckpointResponse{IsSQLite: false})
+		return
+	}
+
+	result, err := db.SQLiteWALCheckpoint(c.Request.Context(), db.SQLiteCheckpointModeTruncate)
+	if err != nil {
+		resp.Error(c, http.StatusInternalServerError, "failed to run sqlite wal checkpoint: "+err.Error())
+		return
+	}
+
+	status, err := db.InspectSQLitePragmas(c.Request.Context())
+	if err != nil {
+		resp.Error(c, http.StatusInternalServerError, "failed to inspect sqlite runtime status after checkpoint: "+err.Error())
+		return
+	}
+	if result == nil || status == nil {
+		resp.Success(c, sqliteCheckpointResponse{IsSQLite: false})
+		return
+	}
+
+	resp.Success(c, sqliteCheckpointResponse{
+		IsSQLite:            true,
+		Mode:                string(db.SQLiteCheckpointModeTruncate),
+		BusyFrames:          result.BusyFrames,
+		LogFrames:           result.LogFrames,
+		CheckpointedFrames:  result.CheckpointedFrames,
+		WALSizeBytesAfter:   status.WALSizeBytes,
+		JournalModeAfter:    status.JournalMode,
+		AutoVacuumModeAfter: status.AutoVacuumMode,
+	})
 }
 
 func exportDB(c *gin.Context) {
@@ -140,6 +241,8 @@ func importDB(c *gin.Context) {
 	}
 
 	_ = op.InitCache()
+	client.ReloadRuntimeSettings()
+	relay.ReloadRuntimeSettings()
 
 	resp.Success(c, result)
 }

@@ -14,7 +14,7 @@ import (
 const dbDumpVersion = 1
 
 func DBExportAll(ctx context.Context, includeLogs, includeStats bool) (*model.DBDump, error) {
-	conn := db.GetDB().WithContext(ctx)
+	conn := db.GetReadDB().WithContext(ctx)
 
 	d := &model.DBDump{
 		Version:      dbDumpVersion,
