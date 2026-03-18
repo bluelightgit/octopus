@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bestruirui/octopus/internal/client"
+	"github.com/bestruirui/octopus/internal/db"
 	"github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/relay"
@@ -32,6 +33,10 @@ func init() {
 				Handle(setSetting),
 		).
 		AddRoute(
+			router.NewRoute("/sqlite-status", http.MethodGet).
+				Handle(getSQLiteStatus),
+		).
+		AddRoute(
 			router.NewRoute("/export", http.MethodGet).
 				Handle(exportDB),
 		).
@@ -39,6 +44,19 @@ func init() {
 			router.NewRoute("/import", http.MethodPost).
 				Handle(importDB),
 		)
+}
+
+type sqliteStatusResponse struct {
+	IsSQLite              bool   `json:"is_sqlite"`
+	DBPath                string `json:"db_path,omitempty"`
+	JournalMode           string `json:"journal_mode,omitempty"`
+	AutoVacuum            int    `json:"auto_vacuum,omitempty"`
+	AutoVacuumMode        string `json:"auto_vacuum_mode,omitempty"`
+	WALAutoCheckpoint     int    `json:"wal_auto_checkpoint,omitempty"`
+	PageCount             int    `json:"page_count,omitempty"`
+	FreelistCount         int    `json:"freelist_count,omitempty"`
+	WALSizeBytes          int64  `json:"wal_size_bytes,omitempty"`
+	AutoVacuumNeedsVacuum bool   `json:"auto_vacuum_needs_vacuum,omitempty"`
 }
 
 func getSettingList(c *gin.Context) {
@@ -83,6 +101,36 @@ func setSetting(c *gin.Context) {
 		task.Update(string(setting.Key), time.Duration(hours)*time.Hour)
 	}
 	resp.Success(c, setting)
+}
+
+func getSQLiteStatus(c *gin.Context) {
+	if !db.IsSQLite() {
+		resp.Success(c, sqliteStatusResponse{IsSQLite: false})
+		return
+	}
+
+	status, err := db.InspectSQLitePragmas(c.Request.Context())
+	if err != nil {
+		resp.Error(c, http.StatusInternalServerError, "failed to inspect sqlite runtime status: "+err.Error())
+		return
+	}
+	if status == nil {
+		resp.Success(c, sqliteStatusResponse{IsSQLite: false})
+		return
+	}
+
+	resp.Success(c, sqliteStatusResponse{
+		IsSQLite:              true,
+		DBPath:                status.DBPath,
+		JournalMode:           status.JournalMode,
+		AutoVacuum:            status.AutoVacuum,
+		AutoVacuumMode:        status.AutoVacuumMode,
+		WALAutoCheckpoint:     status.WALAutoCheckpoint,
+		PageCount:             status.PageCount,
+		FreelistCount:         status.FreelistCount,
+		WALSizeBytes:          status.WALSizeBytes,
+		AutoVacuumNeedsVacuum: status.AutoVacuumNeedsVacuum,
+	})
 }
 
 func exportDB(c *gin.Context) {

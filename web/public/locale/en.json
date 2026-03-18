@@ -336,7 +336,24 @@
             "updateNow": "Update Now",
             "updating": "Updating...",
             "updateSuccess": "Update successful, service will restart shortly",
-            "updateFailed": "Update failed"
+            "updateFailed": "Update failed",
+            "sqlite": {
+                "title": "SQLite Runtime Status",
+                "description": "Checks whether WAL and incremental reclaim settings are active on the current database.",
+                "refresh": "Refresh",
+                "loading": "Inspecting SQLite runtime status...",
+                "loadFailed": "Failed to load SQLite status. Please try again later.",
+                "notSqlite": "This instance is not using SQLite.",
+                "repairRequired": "This database still needs a repair/vacuum run before incremental reclaim becomes active.",
+                "repairHint": "Stop the service, run `octopus sqlite repair`, and then start the service again.",
+                "journalMode": "Journal Mode",
+                "autoVacuumMode": "Auto Vacuum Mode",
+                "walAutoCheckpoint": "WAL Auto Checkpoint",
+                "walSize": "WAL File Size",
+                "pageCount": "Page Count",
+                "freelistCount": "Freelist Count",
+                "dbPath": "Database Path"
+            }
         },
         "log": {
             "title": "Log Settings",
@@ -587,4 +604,3 @@
         }
     }
 }
-

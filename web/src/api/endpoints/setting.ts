@@ -11,6 +11,19 @@ export interface Setting {
     value: string;
 }
 
+export interface SQLiteStatus {
+    is_sqlite: boolean;
+    db_path?: string;
+    journal_mode?: string;
+    auto_vacuum?: number;
+    auto_vacuum_mode?: string;
+    wal_auto_checkpoint?: number;
+    page_count?: number;
+    freelist_count?: number;
+    wal_size_bytes?: number;
+    auto_vacuum_needs_vacuum?: boolean;
+}
+
 export const SettingKey = {
     ProxyURL: 'proxy_url',
     StatsSaveInterval: 'stats_save_interval',
@@ -44,6 +57,17 @@ export function useSettingList() {
         queryKey: ['settings', 'list'],
         queryFn: async () => {
             return apiClient.get<Setting[]>('/api/v1/setting/list');
+        },
+        refetchInterval: 30000,
+        refetchOnMount: 'always',
+    });
+}
+
+export function useSQLiteStatus() {
+    return useQuery({
+        queryKey: ['settings', 'sqlite-status'],
+        queryFn: async () => {
+            return apiClient.get<SQLiteStatus>('/api/v1/setting/sqlite-status');
         },
         refetchInterval: 30000,
         refetchOnMount: 'always',
@@ -213,4 +237,3 @@ export function useImportDB() {
         },
     });
 }
-

@@ -336,7 +336,24 @@
             "updateNow": "立即更新",
             "updating": "更新中...",
             "updateSuccess": "更新成功，服務即將重啟",
-            "updateFailed": "更新失敗"
+            "updateFailed": "更新失敗",
+            "sqlite": {
+                "title": "SQLite 執行狀態",
+                "description": "用於檢查目前資料庫是否已套用 WAL 與增量回收相關設定。",
+                "refresh": "重新整理狀態",
+                "loading": "正在檢查 SQLite 狀態...",
+                "loadFailed": "SQLite 狀態載入失敗，請稍後再試。",
+                "notSqlite": "目前實例未使用 SQLite 資料庫。",
+                "repairRequired": "目前資料庫仍需執行一次 repair/vacuum 才能啟用增量回收。",
+                "repairHint": "請在服務停止後執行 `octopus sqlite repair`，再重新啟動服務。",
+                "journalMode": "日誌模式",
+                "autoVacuumMode": "自動回收模式",
+                "walAutoCheckpoint": "WAL 自動檢查點",
+                "walSize": "WAL 檔案大小",
+                "pageCount": "總頁數",
+                "freelistCount": "空閒頁數",
+                "dbPath": "資料庫路徑"
+            }
         },
         "log": {
             "title": "日誌設定",
@@ -587,4 +604,3 @@
         }
     }
 }
-
