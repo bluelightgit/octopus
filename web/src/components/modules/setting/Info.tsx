@@ -4,7 +4,7 @@ import { useTranslations } from 'next-intl';
 import { Info, Tag, Github, AlertTriangle, Download, Loader2, Database, RefreshCw } from 'lucide-react';
 import { APP_VERSION, GITHUB_REPO } from '@/lib/info';
 import { useLatestInfo, useNowVersion, useUpdateCore } from '@/api/endpoints/update';
-import { useSQLiteStatus } from '@/api/endpoints/setting';
+import { useSQLiteCheckpoint, useSQLiteStatus } from '@/api/endpoints/setting';
 import { Button } from '@/components/ui/button';
 import { toast } from '@/components/common/Toast';
 import { isOctopusCacheName, isFontCacheName, SW_MESSAGE_TYPE } from '@/lib/sw';
@@ -43,6 +43,7 @@ export function SettingInfo() {
     const nowVersionQuery = useNowVersion();
     const updateCore = useUpdateCore();
     const sqliteStatusQuery = useSQLiteStatus();
+    const sqliteCheckpoint = useSQLiteCheckpoint();
 
     const backendNowVersion = nowVersionQuery.data || '';
     const latestVersion = latestInfoQuery.data?.tag_name || '';
@@ -92,6 +93,28 @@ export function SettingInfo() {
             onError: () => {
                 toast.error(t('info.updateFailed'));
             }
+        });
+    };
+
+    const handleSQLiteCheckpoint = () => {
+        sqliteCheckpoint.mutate(undefined, {
+            onSuccess: (result) => {
+                if (!result.is_sqlite) {
+                    toast.warning(t('info.sqlite.notSqlite'));
+                    return;
+                }
+                toast.success(t('info.sqlite.checkpointSuccess'), {
+                    description: t('info.sqlite.checkpointSuccessDetail', {
+                        walSize: formatBytes(result.wal_size_bytes_after),
+                        busyFrames: formatCount(result.busy_frames),
+                        checkpointedFrames: formatCount(result.checkpointed_frames),
+                    }),
+                });
+                sqliteStatusQuery.refetch();
+            },
+            onError: () => {
+                toast.error(t('info.sqlite.checkpointFailed'));
+            },
         });
     };
 
@@ -169,16 +192,28 @@ export function SettingInfo() {
                             <p className="text-xs text-muted-foreground">{t('info.sqlite.description')}</p>
                         </div>
                     </div>
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => sqliteStatusQuery.refetch()}
-                        disabled={sqliteStatusQuery.isFetching}
-                        className="rounded-xl"
-                    >
-                        <RefreshCw className={sqliteStatusQuery.isFetching ? 'size-4 animate-spin' : 'size-4'} />
-                        {t('info.sqlite.refresh')}
-                    </Button>
+                    <div className="flex items-center gap-2">
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={handleSQLiteCheckpoint}
+                            disabled={sqliteCheckpoint.isPending || sqliteStatusQuery.isLoading || !sqliteStatus?.is_sqlite}
+                            className="rounded-xl"
+                        >
+                            <Database className={sqliteCheckpoint.isPending ? 'size-4 animate-pulse' : 'size-4'} />
+                            {sqliteCheckpoint.isPending ? t('info.sqlite.checkpointRunning') : t('info.sqlite.checkpoint')}
+                        </Button>
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => sqliteStatusQuery.refetch()}
+                            disabled={sqliteStatusQuery.isFetching}
+                            className="rounded-xl"
+                        >
+                            <RefreshCw className={sqliteStatusQuery.isFetching ? 'size-4 animate-spin' : 'size-4'} />
+                            {t('info.sqlite.refresh')}
+                        </Button>
+                    </div>
                 </div>
 
                 {sqliteStatusQuery.isLoading ? (

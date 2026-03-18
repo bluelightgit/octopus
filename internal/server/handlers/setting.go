@@ -37,6 +37,10 @@ func init() {
 				Handle(getSQLiteStatus),
 		).
 		AddRoute(
+			router.NewRoute("/sqlite-checkpoint", http.MethodPost).
+				Handle(runSQLiteCheckpoint),
+		).
+		AddRoute(
 			router.NewRoute("/export", http.MethodGet).
 				Handle(exportDB),
 		).
@@ -57,6 +61,17 @@ type sqliteStatusResponse struct {
 	FreelistCount         int    `json:"freelist_count,omitempty"`
 	WALSizeBytes          int64  `json:"wal_size_bytes,omitempty"`
 	AutoVacuumNeedsVacuum bool   `json:"auto_vacuum_needs_vacuum,omitempty"`
+}
+
+type sqliteCheckpointResponse struct {
+	IsSQLite            bool   `json:"is_sqlite"`
+	Mode                string `json:"mode,omitempty"`
+	BusyFrames          int    `json:"busy_frames,omitempty"`
+	LogFrames           int    `json:"log_frames,omitempty"`
+	CheckpointedFrames  int    `json:"checkpointed_frames,omitempty"`
+	WALSizeBytesAfter   int64  `json:"wal_size_bytes_after,omitempty"`
+	JournalModeAfter    string `json:"journal_mode_after,omitempty"`
+	AutoVacuumModeAfter string `json:"auto_vacuum_mode_after,omitempty"`
 }
 
 func getSettingList(c *gin.Context) {
@@ -130,6 +145,40 @@ func getSQLiteStatus(c *gin.Context) {
 		FreelistCount:         status.FreelistCount,
 		WALSizeBytes:          status.WALSizeBytes,
 		AutoVacuumNeedsVacuum: status.AutoVacuumNeedsVacuum,
+	})
+}
+
+func runSQLiteCheckpoint(c *gin.Context) {
+	if !db.IsSQLite() {
+		resp.Success(c, sqliteCheckpointResponse{IsSQLite: false})
+		return
+	}
+
+	result, err := db.SQLiteWALCheckpoint(c.Request.Context(), db.SQLiteCheckpointModeTruncate)
+	if err != nil {
+		resp.Error(c, http.StatusInternalServerError, "failed to run sqlite wal checkpoint: "+err.Error())
+		return
+	}
+
+	status, err := db.InspectSQLitePragmas(c.Request.Context())
+	if err != nil {
+		resp.Error(c, http.StatusInternalServerError, "failed to inspect sqlite runtime status after checkpoint: "+err.Error())
+		return
+	}
+	if result == nil || status == nil {
+		resp.Success(c, sqliteCheckpointResponse{IsSQLite: false})
+		return
+	}
+
+	resp.Success(c, sqliteCheckpointResponse{
+		IsSQLite:            true,
+		Mode:                string(db.SQLiteCheckpointModeTruncate),
+		BusyFrames:          result.BusyFrames,
+		LogFrames:           result.LogFrames,
+		CheckpointedFrames:  result.CheckpointedFrames,
+		WALSizeBytesAfter:   status.WALSizeBytes,
+		JournalModeAfter:    status.JournalMode,
+		AutoVacuumModeAfter: status.AutoVacuumMode,
 	})
 }
 

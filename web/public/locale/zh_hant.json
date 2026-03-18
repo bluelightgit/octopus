@@ -352,7 +352,12 @@
                 "walSize": "WAL 檔案大小",
                 "pageCount": "總頁數",
                 "freelistCount": "空閒頁數",
-                "dbPath": "資料庫路徑"
+                "dbPath": "資料庫路徑",
+                "checkpoint": "執行 checkpoint",
+                "checkpointRunning": "執行中...",
+                "checkpointSuccess": "WAL checkpoint 已完成",
+                "checkpointSuccessDetail": "目前 WAL 大小 {walSize}，busy={busyFrames}，已 checkpoint={checkpointedFrames}",
+                "checkpointFailed": "執行 WAL checkpoint 失敗，請稍後再試。"
             }
         },
         "log": {

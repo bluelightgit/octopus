@@ -352,7 +352,12 @@
                 "walSize": "WAL File Size",
                 "pageCount": "Page Count",
                 "freelistCount": "Freelist Count",
-                "dbPath": "Database Path"
+                "dbPath": "Database Path",
+                "checkpoint": "Run checkpoint",
+                "checkpointRunning": "Running...",
+                "checkpointSuccess": "WAL checkpoint completed",
+                "checkpointSuccessDetail": "Current WAL size {walSize}, busy={busyFrames}, checkpointed={checkpointedFrames}",
+                "checkpointFailed": "Failed to run WAL checkpoint. Please try again later."
             }
         },
         "log": {

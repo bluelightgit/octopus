@@ -24,6 +24,17 @@ export interface SQLiteStatus {
     auto_vacuum_needs_vacuum?: boolean;
 }
 
+export interface SQLiteCheckpointResult {
+    is_sqlite: boolean;
+    mode?: string;
+    busy_frames?: number;
+    log_frames?: number;
+    checkpointed_frames?: number;
+    wal_size_bytes_after?: number;
+    journal_mode_after?: string;
+    auto_vacuum_mode_after?: string;
+}
+
 export const SettingKey = {
     ProxyURL: 'proxy_url',
     StatsSaveInterval: 'stats_save_interval',
@@ -71,6 +82,22 @@ export function useSQLiteStatus() {
         },
         refetchInterval: 30000,
         refetchOnMount: 'always',
+    });
+}
+
+export function useSQLiteCheckpoint() {
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: async () => {
+            return apiClient.post<SQLiteCheckpointResult>('/api/v1/setting/sqlite-checkpoint');
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['settings', 'sqlite-status'] });
+        },
+        onError: (error) => {
+            logger.error('SQLite checkpoint 失败:', error);
+        },
     });
 }
 
