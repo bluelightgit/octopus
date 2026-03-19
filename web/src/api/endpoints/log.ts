@@ -41,6 +41,7 @@ export interface RelayLog {
     upstream_first_event_ms?: number;
     client_first_write_ms?: number;
     upstream_event_count?: number;
+    upstream_event_types?: string[];
     client_chunk_count?: number;
     terminal_seen?: boolean;
     failure_stage?: string;
