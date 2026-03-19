@@ -196,6 +196,10 @@ export function LogCard({ log }: { log: RelayLog }) {
         [log.actual_model_name]
     );
     const requestAPIKeyName = useMemo(() => log.request_api_key_name?.trim() ?? '', [log.request_api_key_name]);
+    const upstreamEventTypes = useMemo(
+        () => (Array.isArray(log.upstream_event_types) ? log.upstream_event_types.filter((value): value is string => !!value?.trim()) : []),
+        [log.upstream_event_types]
+    );
 
     const hasError = !!log.error;
     const hasMultipleAttempts = log.attempts && log.attempts.length > 1;
@@ -204,6 +208,7 @@ export function LogCard({ log }: { log: RelayLog }) {
         log.upstream_first_event_ms !== undefined ||
         log.client_first_write_ms !== undefined ||
         log.upstream_event_count !== undefined ||
+        upstreamEventTypes.length > 0 ||
         log.client_chunk_count !== undefined ||
         log.terminal_seen !== undefined ||
         !!log.failure_stage;
@@ -458,6 +463,25 @@ export function LogCard({ log }: { log: RelayLog }) {
                                                                         <span className="font-mono text-foreground">
                                                                             {log.client_chunk_count ?? naLabel}
                                                                         </span>
+                                                                    </div>
+                                                                    <div className="rounded-lg bg-muted/40 px-2.5 py-2 md:col-span-2">
+                                                                        <div className="mb-2 flex items-center justify-between gap-3">
+                                                                            <span>{t('upstreamEventTypes')}</span>
+                                                                            <span className="font-mono text-foreground">
+                                                                                {upstreamEventTypes.length || naLabel}
+                                                                            </span>
+                                                                        </div>
+                                                                        {upstreamEventTypes.length > 0 ? (
+                                                                            <div className="flex flex-wrap gap-1.5">
+                                                                                {upstreamEventTypes.map((eventType, index) => (
+                                                                                    <Badge key={`${eventType}-${index}`} variant="secondary" className="rounded-md px-2 py-0.5 font-mono text-[11px]">
+                                                                                        {eventType}
+                                                                                    </Badge>
+                                                                                ))}
+                                                                            </div>
+                                                                        ) : (
+                                                                            <div className="font-mono text-foreground">{naLabel}</div>
+                                                                        )}
                                                                     </div>
                                                                     <div className="flex items-center justify-between gap-3 rounded-lg bg-muted/40 px-2.5 py-2">
                                                                         <span>{t('terminalSeen')}</span>

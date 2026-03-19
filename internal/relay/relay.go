@@ -526,13 +526,20 @@ func resetTimer(timer *time.Timer, d time.Duration) {
 	timer.Reset(d)
 }
 
-func inspectResponsesEvent(data string) (bool, bool) {
+type responsesEventProgress struct {
+	EventType  string
+	Meaningful bool
+	Terminal   bool
+	KeepAlive  bool
+}
+
+func inspectResponsesEvent(data string) responsesEventProgress {
 	payload := strings.TrimSpace(data)
 	if payload == "" {
-		return false, false
+		return responsesEventProgress{}
 	}
 	if payload == "[DONE]" {
-		return false, true
+		return responsesEventProgress{EventType: "[DONE]", Terminal: true, KeepAlive: true}
 	}
 
 	var meta struct {
@@ -540,18 +547,26 @@ func inspectResponsesEvent(data string) (bool, bool) {
 	}
 	if err := json.Unmarshal([]byte(payload), &meta); err != nil {
 		log.Warnf("failed to inspect responses event payload: %v", err)
-		return true, false
+		// Unknown non-JSON payload should not unlock client writes or keep the stream alive forever.
+		return responsesEventProgress{EventType: "(non_json_payload)"}
 	}
 
-	switch meta.Type {
+	eventType := strings.TrimSpace(meta.Type)
+	if eventType == "" {
+		return responsesEventProgress{EventType: "(missing_type)"}
+	}
+
+	switch eventType {
 	case "response.created", "response.in_progress", "response.output_item.added", "response.content_part.added", "response.reasoning_summary_part.added", "response.output_item.done", "response.content_part.done", "response.reasoning_summary_part.done":
-		return false, false
+		return responsesEventProgress{EventType: eventType, KeepAlive: true}
 	case "response.output_text.delta", "response.output_text.done", "response.reasoning_summary_text.delta", "response.reasoning_summary_text.done", "response.reasoning_text.delta", "response.reasoning_text.done", "response.function_call_arguments.delta", "response.function_call_arguments.done", "response.refusal.delta", "response.refusal.done":
-		return true, false
+		return responsesEventProgress{EventType: eventType, Meaningful: true, KeepAlive: true}
 	case "response.completed", "response.incomplete", "response.failed", "error":
-		return false, true
+		return responsesEventProgress{EventType: eventType, Terminal: true, KeepAlive: true}
 	default:
-		return true, false
+		// Treat unknown Responses events conservatively so a new prelude-only event family
+		// does not leak to the client and permanently disable retry.
+		return responsesEventProgress{EventType: eventType}
 	}
 }
 
@@ -665,6 +680,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 	}
 
 	passthroughSSE := ra.shouldPassthroughSSE()
+	responsesPassthrough := passthroughSSE && ra.internalRequest != nil && ra.internalRequest.RawAPIFormat == model.APIFormatOpenAIResponse
 	if passthroughSSE {
 		log.Infof("SSE passthrough enabled for channel %s", ra.channel.Name)
 	}
@@ -816,8 +832,13 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			if ra.metrics != nil {
 				ra.metrics.RecordUpstreamEvent(time.Now())
 			}
-			if idleTimer != nil && !sawTerminalEvent {
-				resetTimer(idleTimer, relayStreamIdleTimeout)
+
+			var responsesProgress responsesEventProgress
+			if bufferPrelude || responsesPassthrough {
+				responsesProgress = inspectResponsesEvent(r.data)
+			}
+			if responsesPassthrough && ra.metrics != nil {
+				ra.metrics.RecordUpstreamEventType(responsesProgress.EventType)
 			}
 
 			var (
@@ -828,6 +849,14 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 
 			if passthroughSSE {
 				terminal = ra.isPassthroughTerminalEvent(r.eventType, r.data)
+				if responsesPassthrough {
+					if responsesProgress.Terminal {
+						terminal = true
+					}
+					if !responsesProgress.KeepAlive && !responsesProgress.Meaningful && !responsesProgress.Terminal {
+						continue
+					}
+				}
 				if r.data == "" {
 					if terminal {
 						sawTerminalEvent = true
@@ -845,6 +874,10 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 					data = formatSSEEventString(r.eventType, r.data)
 				default:
 					data = formatSSEDataString(r.data)
+				}
+
+				if idleTimer != nil && !sawTerminalEvent && (!responsesPassthrough || responsesProgress.KeepAlive) {
+					resetTimer(idleTimer, relayStreamIdleTimeout)
 				}
 
 				// Stop early once the upstream signals completion.
@@ -889,14 +922,17 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			}
 
 			if bufferPrelude && len(data) > 0 && firstToken {
-				meaningfulOutput, terminalChunk := inspectResponsesEvent(r.data)
-				if terminalChunk {
+				if responsesProgress.Terminal {
 					terminal = true
 				}
-				if !meaningfulOutput && !terminal {
+				if !responsesProgress.Meaningful && !terminal {
 					pendingPrelude = append(pendingPrelude, pendingSSEChunk{eventType: r.eventType, data: r.data, encoded: data})
 					continue
 				}
+			}
+
+			if idleTimer != nil && !sawTerminalEvent {
+				resetTimer(idleTimer, relayStreamIdleTimeout)
 			}
 
 			if firstToken {

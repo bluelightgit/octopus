@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -18,6 +19,7 @@ import (
 const (
 	maxLoggedClientRequestBytes  = 512 * 1024
 	maxLoggedClientResponseBytes = 1024 * 1024
+	maxLoggedUpstreamEventTypes  = 16
 )
 
 // RelayMetrics 负责最终的日志收集与持久化
@@ -32,6 +34,7 @@ type RelayMetrics struct {
 	UpstreamFirstEventTime time.Time
 	ClientFirstWriteTime   time.Time
 	UpstreamEventCount     int
+	UpstreamEventTypes     []string
 	ClientChunkCount       int
 	TerminalSeen           bool
 	FailureStage           string
@@ -55,10 +58,11 @@ type RelayMetrics struct {
 
 func NewRelayMetrics(apiKeyID int, requestModel string, req *transformerModel.InternalLLMRequest) *RelayMetrics {
 	m := &RelayMetrics{
-		APIKeyID:        apiKeyID,
-		RequestModel:    requestModel,
-		StartTime:       time.Now(),
-		InternalRequest: req,
+		APIKeyID:           apiKeyID,
+		RequestModel:       requestModel,
+		StartTime:          time.Now(),
+		InternalRequest:    req,
+		UpstreamEventTypes: make([]string, 0, 8),
 	}
 	if req != nil && len(req.RawRequest) > 0 {
 		m.SetClientRequestBody(req.RawRequest)
@@ -81,6 +85,26 @@ func (m *RelayMetrics) RecordUpstreamEvent(t time.Time) {
 	if m.UpstreamFirstEventTime.IsZero() {
 		m.UpstreamFirstEventTime = t
 	}
+}
+
+func (m *RelayMetrics) RecordUpstreamEventType(eventType string) {
+	if m == nil {
+		return
+	}
+	eventType = normalizeUpstreamEventType(eventType)
+	if eventType == "" {
+		return
+	}
+	if len(m.UpstreamEventTypes) >= maxLoggedUpstreamEventTypes {
+		copy(m.UpstreamEventTypes, m.UpstreamEventTypes[1:])
+		m.UpstreamEventTypes[len(m.UpstreamEventTypes)-1] = eventType
+		return
+	}
+	m.UpstreamEventTypes = append(m.UpstreamEventTypes, eventType)
+}
+
+func normalizeUpstreamEventType(eventType string) string {
+	return strings.TrimSpace(eventType)
 }
 
 func (m *RelayMetrics) RecordClientChunk(t time.Time, chunk []byte) {
@@ -301,6 +325,9 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 		clientChunkCount := m.ClientChunkCount
 		terminalSeen := m.TerminalSeen
 		relayLog.UpstreamEventCount = &upstreamEventCount
+		if len(m.UpstreamEventTypes) > 0 {
+			relayLog.UpstreamEventTypes = append([]string(nil), m.UpstreamEventTypes...)
+		}
 		relayLog.ClientChunkCount = &clientChunkCount
 		relayLog.TerminalSeen = &terminalSeen
 		if err != nil && m.FailureStage != "" {

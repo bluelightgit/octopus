@@ -504,6 +504,7 @@
             "upstreamFirstEvent": "Upstream First Event",
             "clientFirstWrite": "Client First Write",
             "upstreamEvents": "Upstream Events",
+            "upstreamEventTypes": "Upstream Event Types",
             "clientChunks": "Client Chunks",
             "terminalSeen": "Terminal Seen",
             "failureStage": "Failure Stage",

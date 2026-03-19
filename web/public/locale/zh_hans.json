@@ -504,6 +504,7 @@
             "upstreamFirstEvent": "首个上游事件",
             "clientFirstWrite": "首次客户端写出",
             "upstreamEvents": "上游事件数",
+            "upstreamEventTypes": "上游事件类型",
             "clientChunks": "客户端分块数",
             "terminalSeen": "是否见到终止事件",
             "failureStage": "失败阶段",
