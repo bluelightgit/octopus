@@ -84,6 +84,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	}
 
 	metrics := NewRelayMetrics(apiKeyID, requestModel, internalRequest)
+	metrics.RecordExecutionTrace(fmt.Sprintf("request: raw_api=%s stream=%t raw_only=%t protocol_plan=%s", internalRequest.RawAPIFormat, internalRequest.Stream != nil && *internalRequest.Stream, internalRequest.RawOnly, protocolRoutePlanSummary(protocolPlan)))
 	req := &relayRequest{
 		c:               c,
 		inAdapter:       inAdapter,
@@ -165,6 +166,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 			log.Infof("request model %s, mode: %d, forwarding to channel: %s model: %s (attempt %d/%d, sticky=%t)",
 				requestModel, group.Mode, channel.Name, item.ModelName,
 				activeIter.Index()+1, activeIter.Len(), activeIter.IsSticky())
+			metrics.RecordExecutionTrace(fmt.Sprintf("attempt_start: channel=%s outbound_type=%d upstream_model=%s sticky=%t", channel.Name, channel.Type, item.ModelName, activeIter.IsSticky()))
 
 			req.iter = activeIter
 			ra := &relayAttempt{
@@ -194,19 +196,22 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		activeIter = fallbackIter
 		req.iter = activeIter
 		fallbackIter = nil
+		metrics.RecordExecutionTrace("route_switch: moving to fallback candidates")
 	}
 
 	var ue upstreamHTTPError
 	if internalRequest.RawOnly && rawOnlyHasRequired && !rawOnlySawCompatible {
 		err := errors.New("no same-protocol channel for raw-only request")
+		writeRelayError(c, metrics, http.StatusBadRequest, "no same-protocol channel for raw-only request")
+		metrics.RecordExecutionTrace("request_failed: no same-protocol channel for raw-only request")
 		metrics.Save(c.Request.Context(), false, err, mergeAttempts(primaryIter, fallbackIter, activeIter))
-		resp.Error(c, http.StatusBadRequest, "no same-protocol channel for raw-only request")
 		return
 	}
 
 	if !attemptStarted && firstCompatibilityErr != nil {
+		writeRelayError(c, metrics, http.StatusBadRequest, firstCompatibilityErr.Error())
+		metrics.RecordExecutionTrace(fmt.Sprintf("request_failed: compatibility_error=%s", firstCompatibilityErr.Error()))
 		metrics.Save(c.Request.Context(), false, firstCompatibilityErr, mergeAttempts(primaryIter, fallbackIter, activeIter))
-		resp.Error(c, http.StatusBadRequest, firstCompatibilityErr.Error())
 		return
 	}
 
@@ -214,6 +219,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		if metrics != nil {
 			metrics.SetClientResponseBody(ue.Body)
 		}
+		metrics.RecordExecutionTrace(fmt.Sprintf("request_failed: upstream_http_error status=%d content_type=%s", ue.StatusCode, strings.TrimSpace(ue.ContentType)))
 		metrics.Save(c.Request.Context(), false, lastErr, mergeAttempts(primaryIter, fallbackIter, activeIter))
 		ct := strings.TrimSpace(ue.ContentType)
 		if ct == "" {
@@ -227,8 +233,13 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		return
 	}
 
+	writeRelayError(c, metrics, http.StatusBadGateway, "all channels failed")
+	if lastErr != nil {
+		metrics.RecordExecutionTrace(fmt.Sprintf("request_failed: %s", lastErr.Error()))
+	} else {
+		metrics.RecordExecutionTrace("request_failed: all channels failed")
+	}
 	metrics.Save(c.Request.Context(), false, lastErr, mergeAttempts(primaryIter, fallbackIter, activeIter))
-	resp.Error(c, http.StatusBadGateway, "all channels failed")
 }
 
 func mergeAttempts(primaryIter, fallbackIter, activeIter *balancer.Iterator) []dbmodel.ChannelAttempt {
@@ -257,6 +268,7 @@ type streamFailureEmitter interface {
 // attempt 统一管理一次通道尝试的完整生命周期
 func (ra *relayAttempt) attempt() attemptResult {
 	span := ra.iter.StartAttempt(ra.channel.ID, ra.usedKey.ID, ra.channel.Name)
+	ra.tracef("attempt_forward: channel=%s stream=%t", ra.channel.Name, ra.isStreamRequest())
 
 	// 转发请求
 	statusCode, fwdErr := ra.forward()
@@ -284,6 +296,7 @@ func (ra *relayAttempt) attempt() attemptResult {
 		// 会话保持：更新粘性记录
 		balancer.SetSticky(ra.apiKeyID, ra.requestModel, ra.channel.ID, ra.usedKey.ID)
 
+		ra.tracef("attempt_result: channel=%s success status=%d", ra.channel.Name, statusCode)
 		return attemptResult{Success: true}
 	}
 
@@ -301,6 +314,7 @@ func (ra *relayAttempt) attempt() attemptResult {
 	balancer.RecordFailure(ra.channel.ID, ra.usedKey.ID, ra.internalRequest.Model)
 
 	written := ra.c.Writer.Written()
+	ra.tracef("attempt_result: channel=%s failed status=%d written=%t error=%s", ra.channel.Name, statusCode, written, fwdErr.Error())
 	if written {
 		ra.emitStreamFailureTrailer(ra.c.Request.Context(), fwdErr)
 		ra.collectResponse()
@@ -330,11 +344,14 @@ func (ra *relayAttempt) emitStreamFailureTrailer(ctx context.Context, cause erro
 	chunk, err := emitter.EmitStreamFailure(ctx, cause)
 	if err != nil {
 		log.Warnf("failed to emit stream failure trailer: %v", err)
+		ra.tracef("emit_failure_trailer_error: %v", err)
 		return
 	}
 	if len(chunk) == 0 {
+		ra.tracef("emit_failure_trailer_skipped: empty chunk")
 		return
 	}
+	ra.tracef("emit_failure_trailer: bytes=%d cause=%s", len(chunk), cause.Error())
 	if ra.metrics != nil {
 		ra.metrics.RecordClientChunk(time.Now(), chunk)
 	}
@@ -410,6 +427,17 @@ func upstreamStreamReadError(err error) error {
 	return fmt.Errorf("upstream stream read error: %w", err)
 }
 
+func writeRelayError(c *gin.Context, metrics *RelayMetrics, code int, message string) {
+	payload := resp.ResponseStruct{Code: code, Message: message}
+	if metrics != nil {
+		if body, err := json.Marshal(payload); err == nil {
+			metrics.SetClientResponseBody(body)
+		}
+		metrics.RecordExecutionTrace(fmt.Sprintf("local_error_response: status=%d message=%s", code, message))
+	}
+	c.AbortWithStatusJSON(code, payload)
+}
+
 func upstreamResponseReadError(err error) error {
 	return fmt.Errorf("upstream response read error: %w", err)
 }
@@ -431,6 +459,13 @@ func firstMeaningfulOutputTimeoutDurationError(timeout time.Duration) error {
 
 func (ra *relayAttempt) isStreamRequest() bool {
 	return ra != nil && ra.internalRequest != nil && ra.internalRequest.Stream != nil && *ra.internalRequest.Stream
+}
+
+func (ra *relayAttempt) tracef(format string, args ...any) {
+	if ra == nil || ra.metrics == nil {
+		return
+	}
+	ra.metrics.RecordExecutionTrace(fmt.Sprintf(format, args...))
 }
 
 func (ra *relayAttempt) shouldBufferPreludeUntilMeaningfulOutput() bool {
@@ -694,7 +729,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 	firstToken := true
 	sawAnyEvent := false
 	sawTerminalEvent := false
-	bufferPrelude := ra.shouldBufferPreludeUntilMeaningfulOutput()
+	bufferPrelude := responsesPassthrough && ra.shouldBufferPreludeUntilMeaningfulOutput()
 	type pendingSSEChunk struct {
 		eventType string
 		data      string
@@ -752,6 +787,8 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		}()
 	}
 
+	ra.tracef("stream_open: status=%d content_type=%s passthrough=%t responses_passthrough=%t buffer_prelude=%t first_meaningful_timeout=%s idle_timeout=%s", response.StatusCode, strings.TrimSpace(response.Header.Get("Content-Type")), passthroughSSE, responsesPassthrough, bufferPrelude, formatRelayTimeout(firstMeaningfulOutputTimeout), formatRelayTimeout(relayStreamIdleTimeout))
+
 	writeChunk := func(chunk []byte) {
 		if len(chunk) == 0 {
 			return
@@ -774,19 +811,26 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 	}
 
 	flushPendingPrelude := func() {
+		if len(pendingPrelude) > 0 {
+			ra.tracef("stream_prelude_flush: buffered_chunks=%d", len(pendingPrelude))
+		}
 		for _, chunk := range pendingPrelude {
 			writePassthroughChunk(chunk.eventType, chunk.data, chunk.encoded)
 		}
 		pendingPrelude = pendingPrelude[:0]
 	}
 
+	streamEventIndex := 0
+
 	for {
 		select {
 		case <-ctx.Done():
+			ra.tracef("stream_context_done: client_chunks=%d saw_any_event=%t terminal_seen=%t", ra.metrics.ClientChunkCount, sawAnyEvent, sawTerminalEvent)
 			log.Infof("client disconnected, stopping stream")
 			_ = response.Body.Close()
 			return nil
 		case <-idleC:
+			ra.tracef("stream_timeout: idle after_write=%t saw_any_event=%t buffered_prelude=%d", ra.metrics.ClientChunkCount > 0, sawAnyEvent, len(pendingPrelude))
 			log.Warnf("upstream stream idle timeout after %s", formatRelayTimeout(relayStreamIdleTimeout))
 			_ = response.Body.Close()
 			if ra.metrics != nil {
@@ -794,6 +838,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			}
 			return upstreamStreamIdleTimeoutError()
 		case <-firstTokenC:
+			ra.tracef("stream_timeout: first_meaningful_output buffered_prelude=%d upstream_events=%d", len(pendingPrelude), ra.metrics.UpstreamEventCount)
 			log.Warnf("first meaningful output timeout after %s, switching channel", formatRelayTimeout(firstMeaningfulOutputTimeout))
 			_ = response.Body.Close()
 			if ra.metrics != nil {
@@ -802,6 +847,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			return firstMeaningfulOutputTimeoutDurationError(firstMeaningfulOutputTimeout)
 		case r, ok := <-results:
 			if !ok {
+				ra.tracef("stream_reader_closed: saw_any_event=%t terminal_seen=%t", sawAnyEvent, sawTerminalEvent)
 				if !sawAnyEvent {
 					log.Warnf("upstream stream ended before first event")
 					if ra.metrics != nil {
@@ -820,6 +866,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				return nil
 			}
 			if r.err != nil {
+				ra.tracef("stream_read_error: %v", r.err)
 				log.Warnf("failed to read event: %v", r.err)
 				_ = response.Body.Close()
 				if ra.metrics != nil {
@@ -832,6 +879,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			if ra.metrics != nil {
 				ra.metrics.RecordUpstreamEvent(time.Now())
 			}
+			streamEventIndex++
 
 			var responsesProgress responsesEventProgress
 			if bufferPrelude || responsesPassthrough {
@@ -839,6 +887,13 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			}
 			if responsesPassthrough && ra.metrics != nil {
 				ra.metrics.RecordUpstreamEventType(responsesProgress.EventType)
+				ra.tracef("stream_event#%d: type=%s meaningful=%t keepalive=%t terminal=%t", streamEventIndex, responsesProgress.EventType, responsesProgress.Meaningful, responsesProgress.KeepAlive, responsesProgress.Terminal)
+			} else if ra.internalRequest != nil && ra.internalRequest.RawAPIFormat == model.APIFormatOpenAIResponse {
+				eventType := strings.TrimSpace(r.eventType)
+				if eventType == "" {
+					eventType = "data"
+				}
+				ra.tracef("stream_event#%d: upstream_event=%s passthrough=false data_bytes=%d", streamEventIndex, eventType, len(r.data))
 			}
 
 			var (
@@ -854,11 +909,13 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 						terminal = true
 					}
 					if !responsesProgress.KeepAlive && !responsesProgress.Meaningful && !responsesProgress.Terminal {
+						ra.tracef("stream_event#%d action=drop_non_progress_event", streamEventIndex)
 						continue
 					}
 				}
 				if r.data == "" {
 					if terminal {
+						ra.tracef("stream_event#%d action=terminal_empty_event", streamEventIndex)
 						sawTerminalEvent = true
 						if ra.metrics != nil {
 							ra.metrics.MarkTerminalSeen()
@@ -897,6 +954,9 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				}
 			} else {
 				data, terminal, err = ra.transformStreamData(ctx, r.data)
+				if ra.internalRequest != nil && ra.internalRequest.RawAPIFormat == model.APIFormatOpenAIResponse {
+					ra.tracef("stream_event#%d transformed_bytes=%d terminal=%t transform_err=%t", streamEventIndex, len(data), terminal, err != nil)
+				}
 				if err != nil || len(data) == 0 {
 					if terminal {
 						sawTerminalEvent = true
@@ -912,6 +972,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			}
 
 			if terminal {
+				ra.tracef("stream_terminal_seen: event#%d", streamEventIndex)
 				sawTerminalEvent = true
 				if ra.metrics != nil {
 					ra.metrics.MarkTerminalSeen()
@@ -927,6 +988,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				}
 				if !responsesProgress.Meaningful && !terminal {
 					pendingPrelude = append(pendingPrelude, pendingSSEChunk{eventType: r.eventType, data: r.data, encoded: data})
+					ra.tracef("stream_event#%d action=buffer_prelude buffered_chunks=%d", streamEventIndex, len(pendingPrelude))
 					continue
 				}
 			}
@@ -936,6 +998,7 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 			}
 
 			if firstToken {
+				ra.tracef("first_client_write: event#%d chunk_bytes=%d", streamEventIndex, len(data))
 				ra.metrics.SetFirstTokenTime(time.Now())
 				firstToken = false
 				if firstTokenTimer != nil {
@@ -1207,10 +1270,16 @@ func (ra *relayAttempt) shouldPassthroughNonStream() bool {
 // collectResponse 收集响应信息
 func (ra *relayAttempt) collectResponse() {
 	internalResponse, err := ra.inAdapter.GetInternalResponse(ra.c.Request.Context())
-	if err != nil || internalResponse == nil {
+	if err != nil {
+		ra.tracef("collect_response_error: %v", err)
+		return
+	}
+	if internalResponse == nil {
+		ra.tracef("collect_response: empty")
 		return
 	}
 
+	ra.tracef("collect_response: usage_present=%t choices=%d", internalResponse.Usage != nil, len(internalResponse.Choices))
 	ra.metrics.SetInternalResponse(internalResponse, ra.internalRequest.Model)
 }
 

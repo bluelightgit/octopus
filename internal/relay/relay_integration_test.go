@@ -108,6 +108,22 @@ func assertRelayLogContainsEventTypes(t *testing.T, got []string, want ...string
 	}
 }
 
+func assertRelayLogContainsTrace(t *testing.T, got []string, want ...string) {
+	t.Helper()
+	for _, expected := range want {
+		found := false
+		for _, actual := range got {
+			if strings.Contains(actual, expected) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected relay execution trace to contain %q, got %#v", expected, got)
+		}
+	}
+}
+
 func TestRelayHandler_ResponsesToChatChannel_UsesChatToolSchema(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -583,9 +599,13 @@ func TestRelayHandler_StreamEOFBeforeFirstEvent_Fails(t *testing.T) {
 	if !strings.Contains(logItem.Error, "upstream stream ended before first event") {
 		t.Fatalf("unexpected relay error: %s", logItem.Error)
 	}
-	if logItem.ResponseContent != "" {
-		t.Fatalf("expected empty response content, got %q", logItem.ResponseContent)
+	if !strings.Contains(logItem.ResponseContent, `"message":"all channels failed"`) {
+		t.Fatalf("expected local error response body to be logged, got %q", logItem.ResponseContent)
 	}
+	assertRelayLogContainsTrace(t, logItem.ExecutionTrace,
+		"stream_reader_closed:",
+		"local_error_response: status=502 message=all channels failed",
+	)
 }
 
 func TestRelayHandler_StreamEOFBeforeTerminalEvent_Fails(t *testing.T) {
@@ -622,9 +642,13 @@ func TestRelayHandler_StreamEOFBeforeTerminalEvent_Fails(t *testing.T) {
 	if !strings.Contains(logItem.Error, "upstream stream ended unexpectedly before terminal event") {
 		t.Fatalf("unexpected relay error: %s", logItem.Error)
 	}
-	if logItem.ResponseContent != "" {
-		t.Fatalf("expected buffered prelude to stay hidden, got %q", logItem.ResponseContent)
+	if !strings.Contains(logItem.ResponseContent, `"message":"all channels failed"`) {
+		t.Fatalf("expected local error response body to be logged, got %q", logItem.ResponseContent)
 	}
+	assertRelayLogContainsTrace(t, logItem.ExecutionTrace,
+		"stream_reader_closed:",
+		"local_error_response: status=502 message=all channels failed",
+	)
 }
 
 func TestRelayHandler_StreamTerminalEvent_Succeeds(t *testing.T) {
@@ -717,9 +741,13 @@ func TestRelayHandler_StreamIdleTimeout_Fails(t *testing.T) {
 	if !strings.Contains(logItem.Error, "upstream stream idle timeout") {
 		t.Fatalf("unexpected relay error: %s", logItem.Error)
 	}
-	if logItem.ResponseContent != "" {
-		t.Fatalf("expected buffered prelude to stay hidden, got %q", logItem.ResponseContent)
+	if !strings.Contains(logItem.ResponseContent, `"message":"all channels failed"`) {
+		t.Fatalf("expected local error response body to be logged, got %q", logItem.ResponseContent)
 	}
+	assertRelayLogContainsTrace(t, logItem.ExecutionTrace,
+		"stream_timeout: idle",
+		"local_error_response: status=502 message=all channels failed",
+	)
 }
 
 func TestRelayHandler_NonStreamTimeout_Fails(t *testing.T) {
@@ -1016,6 +1044,70 @@ func TestRelayHandler_StreamIdleTimeoutAfterClientWrite_RecordsDiagnostics(t *te
 	if logItem.FailureStage == nil || *logItem.FailureStage != "stream_idle_timeout" {
 		t.Fatalf("unexpected failure stage: %v", logItem.FailureStage)
 	}
+}
+
+func TestRelayHandler_ResponsesToChatStreamIdleTimeoutAfterClientWrite_EmitsFailureTrailer(t *testing.T) {
+	ctx := setupRelayTestEnv(t)
+	apiKey := createRelayTestAPIKey(t, ctx)
+
+	prevIdle := relayStreamIdleTimeout
+	relayStreamIdleTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { relayStreamIdleTimeout = prevIdle })
+
+	requestModel := "responses-to-chat-stream-idle-after-client-write"
+	upstreamModel := "responses-to-chat-stream-idle-after-client-write-upstream"
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"created\":1730000000,\"model\":\"upstream\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hello\"}}]}\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		time.Sleep(200 * time.Millisecond)
+	}))
+	defer upstream.Close()
+
+	channel := createRelayTestChannel(t, ctx, "chat-channel", outbound.OutboundTypeOpenAIChat, upstream.URL+"/v1")
+	createRelayTestGroupItem(t, ctx, requestModel, channel.ID, upstreamModel)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader([]byte(`{"model":"responses-to-chat-stream-idle-after-client-write","stream":true,"input":"hi"}`)))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	c.Set("api_key_id", apiKey.ID)
+
+	Handler(inbound.InboundTypeOpenAIResponse, c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d, body: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `response.output_text.delta`) {
+		t.Fatalf("expected transformed responses delta, got %q", body)
+	}
+	if !strings.Contains(body, `response.failed`) {
+		t.Fatalf("expected transformed responses failure trailer, got %q", body)
+	}
+	if !strings.Contains(body, `data: [DONE]`) {
+		t.Fatalf("expected done marker after failure trailer, got %q", body)
+	}
+	logItem := lastRelayLog(t, ctx)
+	if !strings.Contains(logItem.Error, "upstream stream idle timeout") {
+		t.Fatalf("unexpected relay error: %s", logItem.Error)
+	}
+	if !strings.Contains(logItem.ResponseContent, `response.output_text.delta`) {
+		t.Fatalf("expected streamed response body to be logged, got %q", logItem.ResponseContent)
+	}
+	assertRelayLogContainsTrace(t, logItem.ExecutionTrace,
+		"stream_open:",
+		"passthrough=false",
+		"first_client_write:",
+		"emit_failure_trailer:",
+	)
 }
 
 func TestRelayHandler_OpenAIChatStreamIdleTimeoutAfterClientWrite_EmitsFailureTrailer(t *testing.T) {

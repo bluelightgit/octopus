@@ -45,6 +45,7 @@ export interface RelayLog {
     client_chunk_count?: number;
     terminal_seen?: boolean;
     failure_stage?: string;
+    execution_trace?: string[];
     use_time: number;            // 总用时(毫秒)
     cost: number;                // 消耗费用
     request_content: string;     // 请求内容

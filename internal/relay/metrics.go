@@ -17,9 +17,10 @@ import (
 )
 
 const (
-	maxLoggedClientRequestBytes  = 512 * 1024
-	maxLoggedClientResponseBytes = 1024 * 1024
-	maxLoggedUpstreamEventTypes  = 16
+	maxLoggedClientRequestBytes    = 512 * 1024
+	maxLoggedClientResponseBytes   = 1024 * 1024
+	maxLoggedUpstreamEventTypes    = 16
+	maxLoggedExecutionTraceEntries = 48
 )
 
 // RelayMetrics 负责最终的日志收集与持久化
@@ -38,6 +39,7 @@ type RelayMetrics struct {
 	ClientChunkCount       int
 	TerminalSeen           bool
 	FailureStage           string
+	ExecutionTrace         []string
 
 	// 请求和响应内容
 	InternalRequest  *transformerModel.InternalLLMRequest
@@ -63,6 +65,7 @@ func NewRelayMetrics(apiKeyID int, requestModel string, req *transformerModel.In
 		StartTime:          time.Now(),
 		InternalRequest:    req,
 		UpstreamEventTypes: make([]string, 0, 8),
+		ExecutionTrace:     make([]string, 0, 16),
 	}
 	if req != nil && len(req.RawRequest) > 0 {
 		m.SetClientRequestBody(req.RawRequest)
@@ -105,6 +108,36 @@ func (m *RelayMetrics) RecordUpstreamEventType(eventType string) {
 
 func normalizeUpstreamEventType(eventType string) string {
 	return strings.TrimSpace(eventType)
+}
+
+func (m *RelayMetrics) RecordExecutionTrace(entry string) {
+	if m == nil {
+		return
+	}
+	entry = normalizeExecutionTraceEntry(entry)
+	if entry == "" {
+		return
+	}
+	if len(m.ExecutionTrace) >= maxLoggedExecutionTraceEntries {
+		copy(m.ExecutionTrace, m.ExecutionTrace[1:])
+		m.ExecutionTrace[len(m.ExecutionTrace)-1] = entry
+		return
+	}
+	m.ExecutionTrace = append(m.ExecutionTrace, entry)
+}
+
+func normalizeExecutionTraceEntry(entry string) string {
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return ""
+	}
+	entry = strings.Join(strings.Fields(entry), " ")
+	const maxTraceRunes = 240
+	runes := []rune(entry)
+	if len(runes) > maxTraceRunes {
+		return string(runes[:maxTraceRunes-3]) + "..."
+	}
+	return entry
 }
 
 func (m *RelayMetrics) RecordClientChunk(t time.Time, chunk []byte) {
@@ -334,6 +367,9 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 			failureStage := m.FailureStage
 			relayLog.FailureStage = &failureStage
 		}
+	}
+	if len(m.ExecutionTrace) > 0 {
+		relayLog.ExecutionTrace = append([]string(nil), m.ExecutionTrace...)
 	}
 
 	// Usage

@@ -508,6 +508,7 @@
             "clientChunks": "客戶端分塊數",
             "terminalSeen": "是否見到終止事件",
             "failureStage": "失敗階段",
+            "executionTrace": "執行鏈路",
             "yes": "是",
             "no": "否",
             "notAvailable": "無"

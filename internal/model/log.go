@@ -41,6 +41,7 @@ type RelayLog struct {
 	ClientChunkCount     *int             `json:"client_chunk_count,omitempty"`                          // 向客户端写出的 chunk 数量
 	TerminalSeen         *bool            `json:"terminal_seen,omitempty"`                               // 是否见到终止事件
 	FailureStage         *string          `json:"failure_stage,omitempty"`                               // 失败阶段
+	ExecutionTrace       []string         `json:"execution_trace,omitempty" gorm:"serializer:json"`      // 最近记录的执行链路
 	UseTime              int              `json:"use_time"`                                              // 总用时(毫秒)
 	Cost                 float64          `json:"cost"`                                                  // 消耗费用
 	RequestContent       string           `json:"request_content"`                                       // 请求内容
