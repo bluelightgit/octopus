@@ -200,6 +200,10 @@ export function LogCard({ log }: { log: RelayLog }) {
         () => (Array.isArray(log.upstream_event_types) ? log.upstream_event_types.filter((value): value is string => !!value?.trim()) : []),
         [log.upstream_event_types]
     );
+    const executionTrace = useMemo(
+        () => (Array.isArray(log.execution_trace) ? log.execution_trace.filter((value): value is string => !!value?.trim()) : []),
+        [log.execution_trace]
+    );
 
     const hasError = !!log.error;
     const hasMultipleAttempts = log.attempts && log.attempts.length > 1;
@@ -211,7 +215,8 @@ export function LogCard({ log }: { log: RelayLog }) {
         upstreamEventTypes.length > 0 ||
         log.client_chunk_count !== undefined ||
         log.terminal_seen !== undefined ||
-        !!log.failure_stage;
+        !!log.failure_stage ||
+        executionTrace.length > 0;
     const naLabel = t('notAvailable');
 
     return (
@@ -494,6 +499,23 @@ export function LogCard({ log }: { log: RelayLog }) {
                                                                         <span className="font-mono text-foreground break-all text-right">
                                                                             {log.failure_stage || naLabel}
                                                                         </span>
+                                                                    </div>
+                                                                    <div className="rounded-lg bg-muted/40 px-2.5 py-2 md:col-span-2">
+                                                                        <div className="mb-2 flex items-center justify-between gap-3">
+                                                                            <span>{t('executionTrace')}</span>
+                                                                            <span className="font-mono text-foreground">
+                                                                                {executionTrace.length || naLabel}
+                                                                            </span>
+                                                                        </div>
+                                                                        {executionTrace.length > 0 ? (
+                                                                            <div className="max-h-40 overflow-auto rounded-md bg-background/70 p-2 font-mono text-[11px] text-foreground space-y-1">
+                                                                                {executionTrace.map((line, index) => (
+                                                                                    <div key={`${index}-${line}`}>{line}</div>
+                                                                                ))}
+                                                                            </div>
+                                                                        ) : (
+                                                                            <div className="font-mono text-foreground">{naLabel}</div>
+                                                                        )}
                                                                     </div>
                                                                 </div>
                                                             </div>

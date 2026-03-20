@@ -508,6 +508,7 @@
             "clientChunks": "Client Chunks",
             "terminalSeen": "Terminal Seen",
             "failureStage": "Failure Stage",
+            "executionTrace": "Execution Trace",
             "yes": "Yes",
             "no": "No",
             "notAvailable": "N/A"
