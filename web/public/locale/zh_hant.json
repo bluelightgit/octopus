@@ -417,6 +417,8 @@
             "preferredProtocolFamily": "協議類型",
             "protocolRoutingMode": "路由策略",
             "protocolRoutingHint": "優先走與客戶端相同協議的直通鏈路；若沒有同協議供應源，再按路由策略決定是否允許跨協議轉換。",
+            "responsesStatefulRouting": "Responses 路由親和",
+            "responsesStatefulRoutingHint": "僅對 OpenAI Responses 請求生效。Auto 會在存在會話狀態時把重試與續接固定到同一路由，Strict 從首輪開始綁定，Off 則關閉這層保護。",
             "items": "已選模型",
             "addItem": "新增模型",
             "autoAdd": "自動新增",
@@ -436,6 +438,11 @@
             "openaiResponses": "OpenAI Responses",
             "anthropicMessages": "Anthropic Messages",
             "geminiContents": "Gemini Contents"
+        },
+        "responsesStatefulRouting": {
+            "off": "關閉",
+            "auto": "自動",
+            "strict": "嚴格"
         },
         "routingMode": {
             "preferSameProtocol": "優先同協議",

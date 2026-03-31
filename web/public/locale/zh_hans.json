@@ -417,6 +417,8 @@
             "preferredProtocolFamily": "协议类型",
             "protocolRoutingMode": "路由策略",
             "protocolRoutingHint": "优先走与客户端相同协议的直通链路；若没有同协议渠道，再按路由策略决定是否允许跨协议转换。",
+            "responsesStatefulRouting": "Responses 路由亲和",
+            "responsesStatefulRoutingHint": "仅对 OpenAI Responses 请求生效。Auto 会在存在会话状态时把重试和续接固定到同一路由，Strict 从首轮开始绑定，Off 则关闭这层保护。",
             "items": "已选模型",
             "addItem": "添加模型",
             "autoAdd": "自动添加",
@@ -436,6 +438,11 @@
             "openaiResponses": "OpenAI Responses",
             "anthropicMessages": "Anthropic Messages",
             "geminiContents": "Gemini Contents"
+        },
+        "responsesStatefulRouting": {
+            "off": "关闭",
+            "auto": "自动",
+            "strict": "严格"
         },
         "routingMode": {
             "preferSameProtocol": "优先同协议",

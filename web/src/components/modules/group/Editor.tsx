@@ -12,7 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Accordion, AccordionContent, AccordionItem } from '@/components/ui/accordion';
 import { cn } from '@/lib/utils';
 import { getModelIcon } from '@/lib/model-icons';
-import { GroupProtocolFamily, GroupProtocolRoutingMode, type GroupMode } from '@/api/endpoints/group';
+import { GroupProtocolFamily, GroupProtocolRoutingMode, GroupResponsesStatefulRoutingMode, type GroupMode } from '@/api/endpoints/group';
 import type { SelectedMember } from './ItemList';
 import { MemberList } from './ItemList';
 import { matchesGroupName, memberKey, normalizeKey, MODE_LABELS } from './utils';
@@ -28,6 +28,7 @@ export type GroupEditorValues = {
     session_keep_time: number;
     preferred_protocol_family: GroupProtocolFamily;
     protocol_routing_mode: GroupProtocolRoutingMode;
+    responses_stateful_routing: GroupResponsesStatefulRoutingMode;
     members: SelectedMember[];
 };
 
@@ -261,6 +262,7 @@ export function GroupEditor({
     const [sessionKeepTime, setSessionKeepTime] = useState<number>(initial?.session_keep_time ?? 0);
     const [preferredProtocolFamily, setPreferredProtocolFamily] = useState<GroupProtocolFamily>(initial?.preferred_protocol_family ?? GroupProtocolFamily.Auto);
     const [protocolRoutingMode, setProtocolRoutingMode] = useState<GroupProtocolRoutingMode>(initial?.protocol_routing_mode ?? GroupProtocolRoutingMode.PreferSameProtocol);
+    const [responsesStatefulRouting, setResponsesStatefulRouting] = useState<GroupResponsesStatefulRoutingMode>(initial?.responses_stateful_routing ?? GroupResponsesStatefulRoutingMode.Auto);
     const [selectedMembers, setSelectedMembers] = useState<SelectedMember[]>(initial?.members ?? []);
     const [removingIds, setRemovingIds] = useState<Set<string>>(new Set());
 
@@ -346,6 +348,7 @@ export function GroupEditor({
             session_keep_time: sessionKeepTime,
             preferred_protocol_family: preferredProtocolFamily,
             protocol_routing_mode: protocolRoutingMode,
+            responses_stateful_routing: responsesStatefulRouting,
             members: selectedMembers,
         });
     };
@@ -450,7 +453,7 @@ export function GroupEditor({
                         </Field>
                     </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                         <Field>
                             <FieldLabel htmlFor="group-preferred-protocol-family">{t('form.preferredProtocolFamily')}</FieldLabel>
                             <Select value={preferredProtocolFamily} onValueChange={(value) => setPreferredProtocolFamily(value as GroupProtocolFamily)}>
@@ -480,10 +483,29 @@ export function GroupEditor({
                                 </SelectContent>
                             </Select>
                         </Field>
+
+                        <Field>
+                            <FieldLabel htmlFor="group-responses-stateful-routing">{t('form.responsesStatefulRouting')}</FieldLabel>
+                            <Select value={responsesStatefulRouting} onValueChange={(value) => setResponsesStatefulRouting(value as GroupResponsesStatefulRoutingMode)}>
+                                <SelectTrigger id="group-responses-stateful-routing" className="w-full rounded-xl">
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value={GroupResponsesStatefulRoutingMode.Off}>{t('responsesStatefulRouting.off')}</SelectItem>
+                                    <SelectItem value={GroupResponsesStatefulRoutingMode.Auto}>{t('responsesStatefulRouting.auto')}</SelectItem>
+                                    <SelectItem value={GroupResponsesStatefulRoutingMode.Strict}>{t('responsesStatefulRouting.strict')}</SelectItem>
+                                </SelectContent>
+                            </Select>
+                        </Field>
                     </div>
 
-                    <div className="rounded-xl border border-border/50 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-                        {t('form.protocolRoutingHint')}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div className="rounded-xl border border-border/50 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                            {t('form.protocolRoutingHint')}
+                        </div>
+                        <div className="rounded-xl border border-border/50 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                            {t('form.responsesStatefulRoutingHint')}
+                        </div>
                     </div>
 
                     {/* Mode */}

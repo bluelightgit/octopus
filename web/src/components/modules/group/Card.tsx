@@ -14,7 +14,7 @@ import type { SelectedMember } from './ItemList';
 import { MemberList } from './ItemList';
 import { GroupEditor, type GroupEditorValues } from './Editor';
 import { buildChannelNameByModelKey, modelChannelKey, MODE_LABELS } from './utils';
-import { GroupMode, GroupProtocolFamily, GroupProtocolRoutingMode, type GroupUpdateRequest } from '@/api/endpoints/group';
+import { GroupMode, GroupProtocolFamily, GroupProtocolRoutingMode, GroupResponsesStatefulRoutingMode, type GroupUpdateRequest } from '@/api/endpoints/group';
 import {
     MorphingDialog,
     MorphingDialogClose,
@@ -57,6 +57,7 @@ function EditDialogContent({ group, displayMembers, isSubmitting, onSubmit }: Ed
                         session_keep_time: group.session_keep_time ?? 0,
                         preferred_protocol_family: group.preferred_protocol_family ?? GroupProtocolFamily.Auto,
                         protocol_routing_mode: group.protocol_routing_mode ?? GroupProtocolRoutingMode.PreferSameProtocol,
+                        responses_stateful_routing: group.responses_stateful_routing ?? GroupResponsesStatefulRoutingMode.Auto,
                         members: displayMembers,
                     }}
                     submitText={t('detail.actions.save')}
@@ -107,7 +108,11 @@ export function GroupCard({ group }: { group: Group }) {
     );
 
     useEffect(() => {
-        if (!isDragging.current) setMembers([...displayMembers]);
+        if (isDragging.current) return;
+        const frame = window.requestAnimationFrame(() => {
+            setMembers([...displayMembers]);
+        });
+        return () => window.cancelAnimationFrame(frame);
     }, [displayMembers]);
 
     useEffect(() => {
@@ -220,6 +225,7 @@ export function GroupCard({ group }: { group: Group }) {
         const nextSessionKeepTime = values.session_keep_time ?? 0;
         const nextPreferredProtocolFamily = values.preferred_protocol_family ?? GroupProtocolFamily.Auto;
         const nextProtocolRoutingMode = values.protocol_routing_mode ?? GroupProtocolRoutingMode.PreferSameProtocol;
+        const nextResponsesStatefulRouting = values.responses_stateful_routing ?? GroupResponsesStatefulRoutingMode.Auto;
 
         if (nextName && nextName !== group.name) payload.name = nextName;
         if (values.mode !== group.mode) payload.mode = values.mode;
@@ -228,6 +234,7 @@ export function GroupCard({ group }: { group: Group }) {
         if (nextSessionKeepTime !== (group.session_keep_time ?? 0)) payload.session_keep_time = nextSessionKeepTime;
         if (nextPreferredProtocolFamily !== (group.preferred_protocol_family ?? GroupProtocolFamily.Auto)) payload.preferred_protocol_family = nextPreferredProtocolFamily;
         if (nextProtocolRoutingMode !== (group.protocol_routing_mode ?? GroupProtocolRoutingMode.PreferSameProtocol)) payload.protocol_routing_mode = nextProtocolRoutingMode;
+        if (nextResponsesStatefulRouting !== (group.responses_stateful_routing ?? GroupResponsesStatefulRoutingMode.Auto)) payload.responses_stateful_routing = nextResponsesStatefulRouting;
         if (items_to_add.length) payload.items_to_add = items_to_add;
         if (items_to_update.length) payload.items_to_update = items_to_update;
         if (items_to_delete.length) payload.items_to_delete = items_to_delete;
@@ -244,7 +251,7 @@ export function GroupCard({ group }: { group: Group }) {
             },
             onError,
         });
-    }, [group.first_token_time_out, group.session_keep_time, group.id, group.items, group.match_regex, group.mode, group.name, onSuccess, onError, updateGroup]);
+    }, [group.first_token_time_out, group.preferred_protocol_family, group.protocol_routing_mode, group.responses_stateful_routing, group.session_keep_time, group.id, group.items, group.match_regex, group.mode, group.name, onSuccess, onError, updateGroup]);
 
     return (
         <article className="flex flex-col rounded-3xl border border-border bg-card text-card-foreground p-4 custom-shadow">

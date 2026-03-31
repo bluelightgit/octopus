@@ -417,6 +417,8 @@
             "preferredProtocolFamily": "Preferred Protocol",
             "protocolRoutingMode": "Routing Strategy",
             "protocolRoutingHint": "Prefer same-protocol passthrough when possible. If no same-protocol channel is available, routing falls back according to the selected strategy.",
+            "responsesStatefulRouting": "Responses Route Affinity",
+            "responsesStatefulRoutingHint": "Only applies to OpenAI Responses requests. Auto binds retries and continuations to the same upstream route when stateful context is present, Strict binds from the first turn, Off disables this protection.",
             "items": "Selected Models",
             "addItem": "Add Model",
             "autoAdd": "Auto Add",
@@ -436,6 +438,11 @@
             "openaiResponses": "OpenAI Responses",
             "anthropicMessages": "Anthropic Messages",
             "geminiContents": "Gemini Contents"
+        },
+        "responsesStatefulRouting": {
+            "off": "Off",
+            "auto": "Auto",
+            "strict": "Strict"
         },
         "routingMode": {
             "preferSameProtocol": "Prefer Same Protocol",
