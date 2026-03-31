@@ -67,6 +67,9 @@ func GroupCreate(group *model.Group, ctx context.Context) error {
 	if group.ProtocolRoutingMode == "" {
 		group.ProtocolRoutingMode = model.GroupProtocolRoutingModePreferSameProtocol
 	}
+	if group.ResponsesStatefulRouting == "" {
+		group.ResponsesStatefulRouting = model.GroupResponsesStatefulRoutingModeAuto
+	}
 	if err := db.GetDB().WithContext(ctx).Create(group).Error; err != nil {
 		return err
 	}
@@ -119,6 +122,10 @@ func GroupUpdate(req *model.GroupUpdateRequest, ctx context.Context) (*model.Gro
 	if req.ProtocolRoutingMode != nil {
 		selectFields = append(selectFields, "protocol_routing_mode")
 		updates.ProtocolRoutingMode = *req.ProtocolRoutingMode
+	}
+	if req.ResponsesStatefulRouting != nil {
+		selectFields = append(selectFields, "responses_stateful_routing")
+		updates.ResponsesStatefulRouting = *req.ResponsesStatefulRouting
 	}
 
 	if len(selectFields) > 0 {

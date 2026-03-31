@@ -89,13 +89,15 @@ var hopByHopHeaders = map[string]bool{
 }
 
 type relayRequest struct {
-	c               *gin.Context
-	inAdapter       model.Inbound
-	internalRequest *model.InternalLLMRequest
-	metrics         *RelayMetrics
-	apiKeyID        int
-	requestModel    string
-	iter            *balancer.Iterator
+	c                 *gin.Context
+	inAdapter         model.Inbound
+	internalRequest   *model.InternalLLMRequest
+	metrics           *RelayMetrics
+	apiKeyID          int
+	groupID           int
+	requestModel      string
+	iter              *balancer.Iterator
+	responsesStateful *responsesStatefulRequestContext
 }
 
 // relayAttempt 尝试级上下文
@@ -105,12 +107,14 @@ type relayAttempt struct {
 	outAdapter           model.Outbound
 	channel              *dbmodel.Channel
 	usedKey              dbmodel.ChannelKey
+	selectedBaseURL      string
 	firstTokenTimeOutSec int
 }
 
 // attemptResult 封装单次尝试的结果
 type attemptResult struct {
-	Success bool  // 是否成功
-	Written bool  // 流式响应是否已开始写入（不可重试）
-	Err     error // 失败时的错误
+	Success      bool  // 是否成功
+	Written      bool  // 流式响应是否已开始写入（不可重试）
+	NonRetryable bool  // 是否禁止继续尝试其他上游
+	Err          error // 失败时的错误
 }

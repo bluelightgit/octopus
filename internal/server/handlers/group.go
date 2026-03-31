@@ -31,6 +31,15 @@ func isValidGroupProtocolRoutingMode(v model.GroupProtocolRoutingMode) bool {
 	}
 }
 
+func isValidResponsesStatefulRoutingMode(v model.GroupResponsesStatefulRoutingMode) bool {
+	switch v {
+	case "", model.GroupResponsesStatefulRoutingModeOff, model.GroupResponsesStatefulRoutingModeAuto, model.GroupResponsesStatefulRoutingModeStrict:
+		return true
+	default:
+		return false
+	}
+}
+
 func init() {
 	router.NewGroupRouter("/api/v1/group").
 		Use(middleware.Auth()).
@@ -80,6 +89,10 @@ func createGroup(c *gin.Context) {
 		resp.Error(c, http.StatusBadRequest, "invalid protocol_routing_mode")
 		return
 	}
+	if !isValidResponsesStatefulRoutingMode(group.ResponsesStatefulRouting) {
+		resp.Error(c, http.StatusBadRequest, "invalid responses_stateful_routing")
+		return
+	}
 	if group.MatchRegex != "" {
 		_, err := regexp2.Compile(group.MatchRegex, regexp2.ECMAScript)
 		if err != nil {
@@ -106,6 +119,10 @@ func updateGroup(c *gin.Context) {
 	}
 	if req.ProtocolRoutingMode != nil && !isValidGroupProtocolRoutingMode(*req.ProtocolRoutingMode) {
 		resp.Error(c, http.StatusBadRequest, "invalid protocol_routing_mode")
+		return
+	}
+	if req.ResponsesStatefulRouting != nil && !isValidResponsesStatefulRoutingMode(*req.ResponsesStatefulRouting) {
+		resp.Error(c, http.StatusBadRequest, "invalid responses_stateful_routing")
 		return
 	}
 	if req.MatchRegex != nil {

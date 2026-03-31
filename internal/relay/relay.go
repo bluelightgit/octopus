@@ -84,22 +84,30 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	}
 
 	metrics := NewRelayMetrics(apiKeyID, requestModel, internalRequest)
+	responsesStateful := buildResponsesStatefulRequestContext(group, apiKeyID, requestModel, internalRequest)
 	metrics.RecordExecutionTrace(fmt.Sprintf("request: raw_api=%s stream=%t raw_only=%t protocol_plan=%s", internalRequest.RawAPIFormat, internalRequest.Stream != nil && *internalRequest.Stream, internalRequest.RawOnly, protocolRoutePlanSummary(protocolPlan)))
+	if responsesStateful != nil {
+		metrics.RecordExecutionTrace(fmt.Sprintf("responses_stateful: mode=%s continuation=%t pinned=%t reason=%s", responsesStateful.Mode, responsesStateful.HasContinuationState, responsesStateful.HasPinnedRoute(), responsesStateful.ProtectionReason()))
+	}
 	req := &relayRequest{
-		c:               c,
-		inAdapter:       inAdapter,
-		internalRequest: internalRequest,
-		metrics:         metrics,
-		apiKeyID:        apiKeyID,
-		requestModel:    requestModel,
-		iter:            activeIter,
+		c:                 c,
+		inAdapter:         inAdapter,
+		internalRequest:   internalRequest,
+		metrics:           metrics,
+		apiKeyID:          apiKeyID,
+		groupID:           group.ID,
+		requestModel:      requestModel,
+		iter:              activeIter,
+		responsesStateful: responsesStateful,
 	}
 
 	var lastErr error
 	var firstCompatibilityErr error
 	attemptStarted := false
+	stopRetries := false
 
 	for {
+		matchedPinnedRoute := false
 		for activeIter.Next() {
 			select {
 			case <-c.Request.Context().Done():
@@ -110,6 +118,9 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 			}
 
 			item := activeIter.Item()
+			if req.responsesStateful != nil && req.responsesStateful.HasPinnedRoute() && item.ChannelID == req.responsesStateful.PinnedRoute.ChannelID {
+				matchedPinnedRoute = true
+			}
 			channel, err := op.ChannelGet(item.ChannelID, c.Request.Context())
 			if err != nil {
 				log.Warnf("failed to get channel %d: %v", item.ChannelID, err)
@@ -130,13 +141,57 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 				rawOnlySawCompatible = true
 			}
 
-			usedKey := channel.GetChannelKey()
-			if usedKey.ChannelKey == "" {
-				activeIter.Skip(channel.ID, 0, channel.Name, "no available key")
+			selectedBaseURL := channel.GetBaseUrl()
+			if selectedBaseURL == "" {
+				activeIter.Skip(channel.ID, 0, channel.Name, "no available base url")
 				continue
 			}
 
+			var usedKey dbmodel.ChannelKey
+			if req.responsesStateful != nil && req.responsesStateful.HasPinnedRoute() {
+				pinnedRoute := req.responsesStateful.PinnedRoute
+				if channel.ID != pinnedRoute.ChannelID {
+					activeIter.Skip(channel.ID, 0, channel.Name, fmt.Sprintf("responses stateful route pinned to channel %d", pinnedRoute.ChannelID))
+					continue
+				}
+				pinnedBaseURL, ok := findPinnedBaseURL(channel, pinnedRoute.BaseURL)
+				if !ok {
+					err = fmt.Errorf("responses stateful route pinned to base url %s but it is unavailable", pinnedRoute.BaseURL)
+					activeIter.Skip(channel.ID, pinnedRoute.ChannelKeyID, channel.Name, err.Error())
+					lastErr = err
+					if req.responsesStateful.BlocksCrossRouteFailover() {
+						stopRetries = true
+						break
+					}
+					continue
+				}
+				selectedBaseURL = pinnedBaseURL
+				pinnedKey, ok := findPinnedChannelKey(channel, pinnedRoute.ChannelKeyID)
+				if !ok {
+					err = fmt.Errorf("responses stateful route pinned to channel key %d but it is unavailable", pinnedRoute.ChannelKeyID)
+					activeIter.Skip(channel.ID, pinnedRoute.ChannelKeyID, channel.Name, err.Error())
+					lastErr = err
+					if req.responsesStateful.BlocksCrossRouteFailover() {
+						stopRetries = true
+						break
+					}
+					continue
+				}
+				usedKey = pinnedKey
+			} else {
+				usedKey = channel.GetChannelKey()
+				if usedKey.ChannelKey == "" {
+					activeIter.Skip(channel.ID, 0, channel.Name, "no available key")
+					continue
+				}
+			}
+
 			if activeIter.SkipCircuitBreak(channel.ID, usedKey.ID, channel.Name) {
+				if req.responsesStateful != nil && req.responsesStateful.HasPinnedRoute() && req.responsesStateful.BlocksCrossRouteFailover() {
+					lastErr = fmt.Errorf("responses stateful route is unavailable because the pinned route is circuit broken")
+					stopRetries = true
+					break
+				}
 				continue
 			}
 
@@ -163,10 +218,10 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 			}
 
 			internalRequest.Model = item.ModelName
-			log.Infof("request model %s, mode: %d, forwarding to channel: %s model: %s (attempt %d/%d, sticky=%t)",
-				requestModel, group.Mode, channel.Name, item.ModelName,
-				activeIter.Index()+1, activeIter.Len(), activeIter.IsSticky())
-			metrics.RecordExecutionTrace(fmt.Sprintf("attempt_start: channel=%s outbound_type=%d upstream_model=%s sticky=%t", channel.Name, channel.Type, item.ModelName, activeIter.IsSticky()))
+			log.Infof("request model %s, mode: %d, forwarding to channel: %s model: %s base_url: %s (attempt %d/%d, sticky=%t, responses_stateful=%t)",
+				requestModel, group.Mode, channel.Name, item.ModelName, normalizeAffinityBaseURL(selectedBaseURL),
+				activeIter.Index()+1, activeIter.Len(), activeIter.IsSticky(), req.responsesStateful != nil)
+			metrics.RecordExecutionTrace(fmt.Sprintf("attempt_start: channel=%s outbound_type=%d upstream_model=%s base_url=%s key_id=%d sticky=%t responses_stateful=%t", channel.Name, channel.Type, item.ModelName, normalizeAffinityBaseURL(selectedBaseURL), usedKey.ID, activeIter.IsSticky(), req.responsesStateful != nil))
 
 			req.iter = activeIter
 			ra := &relayAttempt{
@@ -174,6 +229,7 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 				outAdapter:           outAdapter,
 				channel:              channel,
 				usedKey:              usedKey,
+				selectedBaseURL:      selectedBaseURL,
 				firstTokenTimeOutSec: group.FirstTokenTimeOut,
 			}
 
@@ -188,6 +244,17 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 				return
 			}
 			lastErr = result.Err
+			if result.NonRetryable {
+				stopRetries = true
+				break
+			}
+		}
+		if !stopRetries && req.responsesStateful != nil && req.responsesStateful.HasPinnedRoute() && req.responsesStateful.BlocksCrossRouteFailover() && !matchedPinnedRoute {
+			lastErr = fmt.Errorf("responses stateful route pinned to channel %d but no matching route candidate is available", req.responsesStateful.PinnedRoute.ChannelID)
+			stopRetries = true
+		}
+		if stopRetries {
+			break
 		}
 
 		if fallbackIter == nil || activeIter == fallbackIter {
@@ -213,6 +280,10 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 		metrics.RecordExecutionTrace(fmt.Sprintf("request_failed: compatibility_error=%s", firstCompatibilityErr.Error()))
 		metrics.Save(c.Request.Context(), false, firstCompatibilityErr, mergeAttempts(primaryIter, fallbackIter, activeIter))
 		return
+	}
+
+	if stopRetries && lastErr != nil {
+		metrics.RecordExecutionTrace(fmt.Sprintf("request_failed: responses_stateful_stop error=%s", lastErr.Error()))
 	}
 
 	if lastErr != nil && errors.As(lastErr, &ue) {
@@ -295,6 +366,17 @@ func (ra *relayAttempt) attempt() attemptResult {
 		balancer.RecordSuccess(ra.channel.ID, ra.usedKey.ID, ra.internalRequest.Model)
 		// 会话保持：更新粘性记录
 		balancer.SetSticky(ra.apiKeyID, ra.requestModel, ra.channel.ID, ra.usedKey.ID)
+		if ra.responsesStateful != nil {
+			lookupKeys := ra.responsesStateful.AllLookupKeys()
+			if len(lookupKeys) > 0 {
+				rememberResponsesAffinityRoute(ra.apiKeyID, lookupKeys, responsesAffinityRoute{
+					ChannelID:    ra.channel.ID,
+					ChannelKeyID: ra.usedKey.ID,
+					BaseURL:      ra.selectedBaseURL,
+				})
+				ra.tracef("responses_stateful_bound: lookup_keys=%d channel=%d key_id=%d base_url=%s", len(lookupKeys), ra.channel.ID, ra.usedKey.ID, normalizeAffinityBaseURL(ra.selectedBaseURL))
+			}
+		}
 
 		ra.tracef("attempt_result: channel=%s success status=%d", ra.channel.Name, statusCode)
 		return attemptResult{Success: true}
@@ -319,11 +401,50 @@ func (ra *relayAttempt) attempt() attemptResult {
 		ra.emitStreamFailureTrailer(ra.c.Request.Context(), fwdErr)
 		ra.collectResponse()
 	}
+	nonRetryable := ra.shouldStopCrossRouteRetry(fwdErr)
 	return attemptResult{
-		Success: false,
-		Written: written,
-		Err:     fmt.Errorf("channel %s failed: %w", ra.channel.Name, fwdErr),
+		Success:      false,
+		Written:      written,
+		NonRetryable: nonRetryable,
+		Err:          fmt.Errorf("channel %s failed: %w", ra.channel.Name, fwdErr),
 	}
+}
+
+func (ra *relayAttempt) shouldStopCrossRouteRetry(cause error) bool {
+	if ra == nil || ra.responsesStateful == nil {
+		return false
+	}
+	if !ra.responsesStateful.BlocksCrossRouteFailover() {
+		return false
+	}
+	if cause == nil {
+		return false
+	}
+	if isInvalidEncryptedContentError(cause) {
+		ra.tracef("responses_stateful_stop_retry: reason=invalid_encrypted_content")
+		return true
+	}
+	if ra.responsesStateful.HasPinnedRoute() {
+		ra.tracef("responses_stateful_stop_retry: reason=pinned_route_failed")
+		return true
+	}
+	return false
+}
+
+func isInvalidEncryptedContentError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "invalid_encrypted_content") || strings.Contains(message, "encrypted content") && strings.Contains(message, "could not be verified") {
+		return true
+	}
+	var ue upstreamHTTPError
+	if errors.As(err, &ue) {
+		body := strings.ToLower(string(ue.Body))
+		return strings.Contains(body, "invalid_encrypted_content") || strings.Contains(body, "encrypted content") && strings.Contains(body, "could not be verified")
+	}
+	return false
 }
 
 func (ra *relayAttempt) emitStreamFailureTrailer(ctx context.Context, cause error) {
@@ -619,10 +740,14 @@ func (ra *relayAttempt) forward() (int, error) {
 	}
 
 	// 构建出站请求
+	baseURL := ra.selectedBaseURL
+	if baseURL == "" {
+		baseURL = ra.channel.GetBaseUrl()
+	}
 	outboundRequest, err := ra.outAdapter.TransformRequest(
 		ctx,
 		ra.internalRequest,
-		ra.channel.GetBaseUrl(),
+		baseURL,
 		ra.usedKey.ChannelKey,
 	)
 	if err != nil {
@@ -1050,6 +1175,7 @@ func (ra *relayAttempt) tapStreamForMetrics(ctx context.Context, data string) {
 		return
 	}
 
+	ra.observeResponsesAffinityPayload([]byte(data))
 	internalStream, err := ra.outAdapter.TransformStream(ctx, []byte(data))
 	if err != nil {
 		log.Warnf("failed to tap outbound stream for metrics: %v", err)
@@ -1135,8 +1261,16 @@ func formatSSEEventString(eventType string, data string) []byte {
 	return []byte(sb.String())
 }
 
+func (ra *relayAttempt) observeResponsesAffinityPayload(payload []byte) {
+	if ra == nil || ra.responsesStateful == nil || len(payload) == 0 {
+		return
+	}
+	observeResponsesAffinityFromPayload(ra.groupID, ra.requestModel, ra.responsesStateful, payload)
+}
+
 // transformStreamData 转换流式数据
 func (ra *relayAttempt) transformStreamData(ctx context.Context, data string) ([]byte, bool, error) {
+	ra.observeResponsesAffinityPayload([]byte(data))
 	internalStream, err := ra.outAdapter.TransformStream(ctx, []byte(data))
 	if err != nil {
 		log.Warnf("failed to transform stream: %v", err)
@@ -1218,6 +1352,7 @@ func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Respo
 		if contentType == "" {
 			contentType = "application/json"
 		}
+		ra.observeResponsesAffinityPayload(bodyBytes)
 		if ra.metrics != nil {
 			ra.metrics.SetClientResponseBody(bodyBytes)
 		}
@@ -1234,6 +1369,9 @@ func (ra *relayAttempt) handleResponse(ctx context.Context, response *http.Respo
 		return fmt.Errorf("failed to transform outbound response: %w", err)
 	}
 
+	if internalResponse != nil {
+		observeResponsesAffinityFromInternalResponse(ra.groupID, ra.requestModel, ra.responsesStateful, internalResponse)
+	}
 	inResponse, err := ra.inAdapter.TransformResponse(ctx, internalResponse)
 	if err != nil {
 		log.Warnf("failed to transform response: %v", err)

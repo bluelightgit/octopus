@@ -24,5 +24,8 @@ func backfillGroupProtocolRoutingDefaults(db *gorm.DB) error {
 	if err := db.Exec(`UPDATE groups SET protocol_routing_mode = 'prefer_same_protocol' WHERE protocol_routing_mode IS NULL OR TRIM(protocol_routing_mode) = ''`).Error; err != nil {
 		return fmt.Errorf("failed to backfill groups.protocol_routing_mode: %w", err)
 	}
+	if err := db.Exec(`UPDATE groups SET responses_stateful_routing = 'auto' WHERE responses_stateful_routing IS NULL OR TRIM(responses_stateful_routing) = ''`).Error; err != nil {
+		return fmt.Errorf("failed to backfill groups.responses_stateful_routing: %w", err)
+	}
 	return nil
 }

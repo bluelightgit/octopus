@@ -5,6 +5,7 @@ type GroupMode int
 type GroupProtocolFamily string
 
 type GroupProtocolRoutingMode string
+type GroupResponsesStatefulRoutingMode string
 
 const (
 	GroupModeRoundRobin GroupMode = 1 // 轮询：依次循环选择渠道
@@ -27,16 +28,23 @@ const (
 	GroupProtocolRoutingModeAllowCrossProtocol GroupProtocolRoutingMode = "allow_cross_protocol"
 )
 
+const (
+	GroupResponsesStatefulRoutingModeOff    GroupResponsesStatefulRoutingMode = "off"
+	GroupResponsesStatefulRoutingModeAuto   GroupResponsesStatefulRoutingMode = "auto"
+	GroupResponsesStatefulRoutingModeStrict GroupResponsesStatefulRoutingMode = "strict"
+)
+
 type Group struct {
-	ID                      int                      `json:"id" gorm:"primaryKey"`
-	Name                    string                   `json:"name" gorm:"unique;not null"`
-	Mode                    GroupMode                `json:"mode" gorm:"not null"`
-	MatchRegex              string                   `json:"match_regex"`
-	FirstTokenTimeOut       int                      `json:"first_token_time_out"`
-	SessionKeepTime         int                      `json:"session_keep_time"`
-	PreferredProtocolFamily GroupProtocolFamily      `json:"preferred_protocol_family" gorm:"default:auto"`
-	ProtocolRoutingMode     GroupProtocolRoutingMode `json:"protocol_routing_mode" gorm:"default:prefer_same_protocol"`
-	Items                   []GroupItem              `json:"items,omitempty" gorm:"foreignKey:GroupID"`
+	ID                       int                               `json:"id" gorm:"primaryKey"`
+	Name                     string                            `json:"name" gorm:"unique;not null"`
+	Mode                     GroupMode                         `json:"mode" gorm:"not null"`
+	MatchRegex               string                            `json:"match_regex"`
+	FirstTokenTimeOut        int                               `json:"first_token_time_out"`
+	SessionKeepTime          int                               `json:"session_keep_time"`
+	PreferredProtocolFamily  GroupProtocolFamily               `json:"preferred_protocol_family" gorm:"default:auto"`
+	ProtocolRoutingMode      GroupProtocolRoutingMode          `json:"protocol_routing_mode" gorm:"default:prefer_same_protocol"`
+	ResponsesStatefulRouting GroupResponsesStatefulRoutingMode `json:"responses_stateful_routing" gorm:"default:auto"`
+	Items                    []GroupItem                       `json:"items,omitempty" gorm:"foreignKey:GroupID"`
 }
 
 type GroupItem struct {
@@ -49,17 +57,18 @@ type GroupItem struct {
 }
 
 type GroupUpdateRequest struct {
-	ID                      int                       `json:"id" binding:"required"`
-	Name                    *string                   `json:"name,omitempty"`
-	Mode                    *GroupMode                `json:"mode,omitempty"`
-	MatchRegex              *string                   `json:"match_regex,omitempty"`
-	FirstTokenTimeOut       *int                      `json:"first_token_time_out,omitempty"`
-	SessionKeepTime         *int                      `json:"session_keep_time,omitempty"`
-	PreferredProtocolFamily *GroupProtocolFamily      `json:"preferred_protocol_family,omitempty"`
-	ProtocolRoutingMode     *GroupProtocolRoutingMode `json:"protocol_routing_mode,omitempty"`
-	ItemsToAdd              []GroupItemAddRequest     `json:"items_to_add,omitempty"`
-	ItemsToUpdate           []GroupItemUpdateRequest  `json:"items_to_update,omitempty"`
-	ItemsToDelete           []int                     `json:"items_to_delete,omitempty"`
+	ID                       int                                `json:"id" binding:"required"`
+	Name                     *string                            `json:"name,omitempty"`
+	Mode                     *GroupMode                         `json:"mode,omitempty"`
+	MatchRegex               *string                            `json:"match_regex,omitempty"`
+	FirstTokenTimeOut        *int                               `json:"first_token_time_out,omitempty"`
+	SessionKeepTime          *int                               `json:"session_keep_time,omitempty"`
+	PreferredProtocolFamily  *GroupProtocolFamily               `json:"preferred_protocol_family,omitempty"`
+	ProtocolRoutingMode      *GroupProtocolRoutingMode          `json:"protocol_routing_mode,omitempty"`
+	ResponsesStatefulRouting *GroupResponsesStatefulRoutingMode `json:"responses_stateful_routing,omitempty"`
+	ItemsToAdd               []GroupItemAddRequest              `json:"items_to_add,omitempty"`
+	ItemsToUpdate            []GroupItemUpdateRequest           `json:"items_to_update,omitempty"`
+	ItemsToDelete            []int                              `json:"items_to_delete,omitempty"`
 }
 
 type GroupItemAddRequest struct {
@@ -95,5 +104,14 @@ func (g Group) GetProtocolRoutingMode() GroupProtocolRoutingMode {
 		return g.ProtocolRoutingMode
 	default:
 		return GroupProtocolRoutingModePreferSameProtocol
+	}
+}
+
+func (g Group) GetResponsesStatefulRoutingMode() GroupResponsesStatefulRoutingMode {
+	switch g.ResponsesStatefulRouting {
+	case GroupResponsesStatefulRoutingModeOff, GroupResponsesStatefulRoutingModeStrict:
+		return g.ResponsesStatefulRouting
+	default:
+		return GroupResponsesStatefulRoutingModeAuto
 	}
 }
