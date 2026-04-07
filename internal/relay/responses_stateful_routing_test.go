@@ -64,7 +64,7 @@ func TestResponsesStatefulContextPinsExactRoute(t *testing.T) {
 	if len(lookupKeys) == 0 {
 		t.Fatal("expected lookup keys")
 	}
-	rememberResponsesAffinityRoute(1001, lookupKeys, responsesAffinityRoute{
+	rememberResponsesAffinityRoute(1001, lookupKeys, affinityRoute{
 		ChannelID:    9,
 		ChannelKeyID: 11,
 		BaseURL:      "https://upstream-a.example/v1",

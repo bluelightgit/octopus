@@ -7,12 +7,19 @@ import (
 	"github.com/bestruirui/octopus/internal/model"
 )
 
+// IteratorOptions controls per-request candidate prioritization without
+// coupling the balancer to protocol-specific request parsing.
+type IteratorOptions struct {
+	PreferChannelID      int
+	DisableSessionSticky bool
+}
+
 // Iterator 统一的负载均衡迭代器
 // 内部编排：策略排序 + 粘性优先 + 决策追踪
 type Iterator struct {
 	candidates []model.GroupItem
 	index      int
-	stickyIdx  int    // 粘性通道在 candidates 中的位置，-1 表示无
+	stickyIdx  int    // 亲和通道在 candidates 中的位置，-1 表示无
 	modelName  string // 请求模型名（用于熔断检查）
 
 	// 内嵌追踪
@@ -23,20 +30,34 @@ type Iterator struct {
 // NewIterator 创建负载均衡迭代器
 // 自动处理：策略排序 + 粘性通道提前
 func NewIterator(group model.Group, apiKeyID int, requestModel string) *Iterator {
+	return NewIteratorWithOptions(group, apiKeyID, requestModel, IteratorOptions{})
+}
+
+// NewIteratorWithOptions creates an iterator with optional per-request affinity hints.
+func NewIteratorWithOptions(group model.Group, apiKeyID int, requestModel string, opts IteratorOptions) *Iterator {
 	b := GetBalancer(group.Mode)
 	candidates := b.Candidates(group.Items)
 
 	stickyIdx := -1
-	if group.SessionKeepTime > 0 {
-		stickyTTL := time.Duration(group.SessionKeepTime) * time.Second
-		if sticky := GetSticky(apiKeyID, requestModel, stickyTTL); sticky != nil {
+	if len(candidates) > 0 {
+		targetChannelID := 0
+		if opts.PreferChannelID > 0 {
+			targetChannelID = opts.PreferChannelID
+		} else if !opts.DisableSessionSticky && group.SessionKeepTime > 0 {
+			stickyTTL := time.Duration(group.SessionKeepTime) * time.Second
+			if sticky := GetSticky(apiKeyID, requestModel, stickyTTL); sticky != nil {
+				targetChannelID = sticky.ChannelID
+			}
+		}
+
+		if targetChannelID > 0 {
 			for i, item := range candidates {
-				if item.ChannelID == sticky.ChannelID {
+				if item.ChannelID == targetChannelID {
 					if i > 0 {
-						// 将粘性通道移到最前面
-						stickyItem := candidates[i]
+						// 将亲和通道移到最前面
+						targetItem := candidates[i]
 						copy(candidates[1:i+1], candidates[0:i])
-						candidates[0] = stickyItem
+						candidates[0] = targetItem
 					}
 					stickyIdx = 0
 					break

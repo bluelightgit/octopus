@@ -65,12 +65,25 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	}
 	log.Infof("protocol routing for model %s: %s", requestModel, protocolRoutePlanSummary(protocolPlan))
 
+	responsesStateful := buildResponsesStatefulRequestContext(group, apiKeyID, requestModel, internalRequest)
+	conversationAffinity := buildConversationAffinityRequestContext(group, apiKeyID, requestModel, internalRequest)
+
+	iterOpts := balancer.IteratorOptions{}
+	if responsesStateful != nil || conversationAffinity != nil {
+		iterOpts.DisableSessionSticky = true
+	}
+	if responsesStateful != nil && responsesStateful.HasPinnedRoute() {
+		iterOpts.PreferChannelID = responsesStateful.PinnedRoute.ChannelID
+	} else if conversationAffinity != nil && conversationAffinity.PreferredRoute != nil {
+		iterOpts.PreferChannelID = conversationAffinity.PreferredRoute.ChannelID
+	}
+
 	primaryGroup := cloneGroupWithItems(group, protocolPlan.Primary)
-	primaryIter := balancer.NewIterator(primaryGroup, apiKeyID, requestModel)
+	primaryIter := balancer.NewIteratorWithOptions(primaryGroup, apiKeyID, requestModel, iterOpts)
 	var fallbackIter *balancer.Iterator
 	if len(protocolPlan.Fallback) > 0 {
 		fallbackGroup := cloneGroupWithItems(group, protocolPlan.Fallback)
-		fallbackIter = balancer.NewIterator(fallbackGroup, apiKeyID, requestModel)
+		fallbackIter = balancer.NewIteratorWithOptions(fallbackGroup, apiKeyID, requestModel, iterOpts)
 	}
 
 	activeIter := primaryIter
@@ -84,21 +97,24 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 	}
 
 	metrics := NewRelayMetrics(apiKeyID, requestModel, internalRequest)
-	responsesStateful := buildResponsesStatefulRequestContext(group, apiKeyID, requestModel, internalRequest)
 	metrics.RecordExecutionTrace(fmt.Sprintf("request: raw_api=%s stream=%t raw_only=%t protocol_plan=%s", internalRequest.RawAPIFormat, internalRequest.Stream != nil && *internalRequest.Stream, internalRequest.RawOnly, protocolRoutePlanSummary(protocolPlan)))
 	if responsesStateful != nil {
 		metrics.RecordExecutionTrace(fmt.Sprintf("responses_stateful: mode=%s continuation=%t pinned=%t reason=%s", responsesStateful.Mode, responsesStateful.HasContinuationState, responsesStateful.HasPinnedRoute(), responsesStateful.ProtectionReason()))
 	}
+	if conversationAffinity != nil {
+		metrics.RecordExecutionTrace(fmt.Sprintf("conversation_affinity: keys=%d preferred=%t selected=%s", len(conversationAffinity.LookupKeys), conversationAffinity.PreferredRoute != nil, conversationAffinity.SelectedLookupKey))
+	}
 	req := &relayRequest{
-		c:                 c,
-		inAdapter:         inAdapter,
-		internalRequest:   internalRequest,
-		metrics:           metrics,
-		apiKeyID:          apiKeyID,
-		groupID:           group.ID,
-		requestModel:      requestModel,
-		iter:              activeIter,
-		responsesStateful: responsesStateful,
+		c:                    c,
+		inAdapter:            inAdapter,
+		internalRequest:      internalRequest,
+		metrics:              metrics,
+		apiKeyID:             apiKeyID,
+		groupID:              group.ID,
+		requestModel:         requestModel,
+		iter:                 activeIter,
+		responsesStateful:    responsesStateful,
+		conversationAffinity: conversationAffinity,
 	}
 
 	var lastErr error
@@ -179,13 +195,23 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 				}
 				usedKey = pinnedKey
 			} else {
-				usedKey = channel.GetChannelKey()
+				if req.conversationAffinity != nil && req.conversationAffinity.PreferredRoute != nil && channel.ID == req.conversationAffinity.PreferredRoute.ChannelID {
+					preferredRoute := req.conversationAffinity.PreferredRoute
+					if preferredBaseURL, ok := findPinnedBaseURL(channel, preferredRoute.BaseURL); ok {
+						selectedBaseURL = preferredBaseURL
+					}
+					if preferredKey, ok := findPinnedChannelKey(channel, preferredRoute.ChannelKeyID); ok {
+						usedKey = preferredKey
+					}
+				}
+				if usedKey.ChannelKey == "" {
+					usedKey = channel.GetChannelKey()
+				}
 				if usedKey.ChannelKey == "" {
 					activeIter.Skip(channel.ID, 0, channel.Name, "no available key")
 					continue
 				}
 			}
-
 			if activeIter.SkipCircuitBreak(channel.ID, usedKey.ID, channel.Name) {
 				if req.responsesStateful != nil && req.responsesStateful.HasPinnedRoute() && req.responsesStateful.BlocksCrossRouteFailover() {
 					lastErr = fmt.Errorf("responses stateful route is unavailable because the pinned route is circuit broken")
@@ -364,18 +390,28 @@ func (ra *relayAttempt) attempt() attemptResult {
 
 		// 熔断器：记录成功
 		balancer.RecordSuccess(ra.channel.ID, ra.usedKey.ID, ra.internalRequest.Model)
-		// 会话保持：更新粘性记录
-		balancer.SetSticky(ra.apiKeyID, ra.requestModel, ra.channel.ID, ra.usedKey.ID)
+		// 会话保持：仅对未启用前缀亲和的请求保留旧的模型级 sticky。
+		if ra.conversationAffinity == nil {
+			balancer.SetSticky(ra.apiKeyID, ra.requestModel, ra.channel.ID, ra.usedKey.ID)
+		}
 		if ra.responsesStateful != nil {
 			lookupKeys := ra.responsesStateful.AllLookupKeys()
 			if len(lookupKeys) > 0 {
-				rememberResponsesAffinityRoute(ra.apiKeyID, lookupKeys, responsesAffinityRoute{
+				rememberResponsesAffinityRoute(ra.apiKeyID, lookupKeys, affinityRoute{
 					ChannelID:    ra.channel.ID,
 					ChannelKeyID: ra.usedKey.ID,
 					BaseURL:      ra.selectedBaseURL,
 				})
 				ra.tracef("responses_stateful_bound: lookup_keys=%d channel=%d key_id=%d base_url=%s", len(lookupKeys), ra.channel.ID, ra.usedKey.ID, normalizeAffinityBaseURL(ra.selectedBaseURL))
 			}
+		}
+		if ra.conversationAffinity != nil && len(ra.conversationAffinity.LookupKeys) > 0 {
+			rememberConversationAffinityRoute(ra.apiKeyID, ra.conversationAffinity.LookupKeys, affinityRoute{
+				ChannelID:    ra.channel.ID,
+				ChannelKeyID: ra.usedKey.ID,
+				BaseURL:      ra.selectedBaseURL,
+			})
+			ra.tracef("conversation_affinity_bound: lookup_keys=%d channel=%d key_id=%d base_url=%s", len(ra.conversationAffinity.LookupKeys), ra.channel.ID, ra.usedKey.ID, normalizeAffinityBaseURL(ra.selectedBaseURL))
 		}
 
 		ra.tracef("attempt_result: channel=%s success status=%d", ra.channel.Name, statusCode)
