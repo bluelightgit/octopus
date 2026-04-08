@@ -415,6 +415,7 @@
             "sessionKeepTime": "會話保持",
             "sessionKeepTimeHint": "單位秒，會話期間保持使用同一供應源，0 表示停用",
             "preferredProtocolFamily": "協議類型",
+            "preferredProtocolFamilyHint": "優先選擇能原生處理目前請求協議的供應源。Auto 由路由器自行判斷，手動指定則會盡量偏向對應協議族。",
             "protocolRoutingMode": "路由策略",
             "protocolRoutingHint": "優先走與客戶端相同協議的直通鏈路；若沒有同協議供應源，再按路由策略決定是否允許跨協議轉換。",
             "responsesStatefulRouting": "Responses 路由親和",

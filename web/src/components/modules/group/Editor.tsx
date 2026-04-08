@@ -175,6 +175,32 @@ function ModelPickerSection({
     );
 }
 
+function LabelWithHint({
+    htmlFor,
+    label,
+    hint,
+}: {
+    htmlFor: string;
+    label: string;
+    hint: string;
+}) {
+    return (
+        <FieldLabel htmlFor={htmlFor} className="items-center">
+            <span>{label}</span>
+            <TooltipProvider>
+                <Tooltip>
+                    <TooltipTrigger asChild>
+                        <HelpCircle className="size-4 text-muted-foreground cursor-help" />
+                    </TooltipTrigger>
+                    <TooltipContent>
+                        {hint}
+                    </TooltipContent>
+                </Tooltip>
+            </TooltipProvider>
+        </FieldLabel>
+    );
+}
+
 function SortSection({
     members,
     onReorder,
@@ -385,19 +411,11 @@ export function GroupEditor({
                         </Field>
 
                         <Field>
-                            <FieldLabel htmlFor="group-first-token-time-out">
-                                {t('form.firstTokenTimeOut')}
-                                <TooltipProvider>
-                                    <Tooltip>
-                                        <TooltipTrigger asChild>
-                                            <HelpCircle className="size-4 text-muted-foreground cursor-help" />
-                                        </TooltipTrigger>
-                                        <TooltipContent>
-                                            {t('form.firstTokenTimeOutHint')}
-                                        </TooltipContent>
-                                    </Tooltip>
-                                </TooltipProvider>
-                            </FieldLabel>
+                            <LabelWithHint
+                                htmlFor="group-first-token-time-out"
+                                label={t('form.firstTokenTimeOut')}
+                                hint={t('form.firstTokenTimeOutHint')}
+                            />
                             <Input
                                 id="group-first-token-time-out"
                                 type="number"
@@ -419,19 +437,11 @@ export function GroupEditor({
                         </Field>
 
                         <Field>
-                            <FieldLabel htmlFor="group-session-keep-time">
-                                {t('form.sessionKeepTime')}
-                                <TooltipProvider>
-                                    <Tooltip>
-                                        <TooltipTrigger asChild>
-                                            <HelpCircle className="size-4 text-muted-foreground cursor-help" />
-                                        </TooltipTrigger>
-                                        <TooltipContent>
-                                            {t('form.sessionKeepTimeHint')}
-                                        </TooltipContent>
-                                    </Tooltip>
-                                </TooltipProvider>
-                            </FieldLabel>
+                            <LabelWithHint
+                                htmlFor="group-session-keep-time"
+                                label={t('form.sessionKeepTime')}
+                                hint={t('form.sessionKeepTimeHint')}
+                            />
                             <Input
                                 id="group-session-keep-time"
                                 type="number"
@@ -455,7 +465,11 @@ export function GroupEditor({
 
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                         <Field>
-                            <FieldLabel htmlFor="group-preferred-protocol-family">{t('form.preferredProtocolFamily')}</FieldLabel>
+                            <LabelWithHint
+                                htmlFor="group-preferred-protocol-family"
+                                label={t('form.preferredProtocolFamily')}
+                                hint={t('form.preferredProtocolFamilyHint')}
+                            />
                             <Select value={preferredProtocolFamily} onValueChange={(value) => setPreferredProtocolFamily(value as GroupProtocolFamily)}>
                                 <SelectTrigger id="group-preferred-protocol-family" className="w-full rounded-xl">
                                     <SelectValue />
@@ -471,7 +485,11 @@ export function GroupEditor({
                         </Field>
 
                         <Field>
-                            <FieldLabel htmlFor="group-protocol-routing-mode">{t('form.protocolRoutingMode')}</FieldLabel>
+                            <LabelWithHint
+                                htmlFor="group-protocol-routing-mode"
+                                label={t('form.protocolRoutingMode')}
+                                hint={t('form.protocolRoutingHint')}
+                            />
                             <Select value={protocolRoutingMode} onValueChange={(value) => setProtocolRoutingMode(value as GroupProtocolRoutingMode)}>
                                 <SelectTrigger id="group-protocol-routing-mode" className="w-full rounded-xl">
                                     <SelectValue />
@@ -485,7 +503,11 @@ export function GroupEditor({
                         </Field>
 
                         <Field>
-                            <FieldLabel htmlFor="group-responses-stateful-routing">{t('form.responsesStatefulRouting')}</FieldLabel>
+                            <LabelWithHint
+                                htmlFor="group-responses-stateful-routing"
+                                label={t('form.responsesStatefulRouting')}
+                                hint={t('form.responsesStatefulRoutingHint')}
+                            />
                             <Select value={responsesStatefulRouting} onValueChange={(value) => setResponsesStatefulRouting(value as GroupResponsesStatefulRoutingMode)}>
                                 <SelectTrigger id="group-responses-stateful-routing" className="w-full rounded-xl">
                                     <SelectValue />
@@ -497,15 +519,6 @@ export function GroupEditor({
                                 </SelectContent>
                             </Select>
                         </Field>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <div className="rounded-xl border border-border/50 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-                            {t('form.protocolRoutingHint')}
-                        </div>
-                        <div className="rounded-xl border border-border/50 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-                            {t('form.responsesStatefulRoutingHint')}
-                        </div>
                     </div>
 
                     {/* Mode */}

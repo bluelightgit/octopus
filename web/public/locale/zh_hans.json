@@ -415,6 +415,7 @@
             "sessionKeepTime": "会话保持",
             "sessionKeepTimeHint": "单位秒，会话期间保持使用同一渠道，0 表示禁用",
             "preferredProtocolFamily": "协议类型",
+            "preferredProtocolFamilyHint": "优先选择能原生处理当前请求协议的渠道。Auto 由路由器自行判断，手动指定则会尽量偏向对应协议族。",
             "protocolRoutingMode": "路由策略",
             "protocolRoutingHint": "优先走与客户端相同协议的直通链路；若没有同协议渠道，再按路由策略决定是否允许跨协议转换。",
             "responsesStatefulRouting": "Responses 路由亲和",

@@ -415,6 +415,7 @@
             "sessionKeepTime": "Session Keep Time",
             "sessionKeepTimeHint": "Unit: seconds, keeps using the same channel within a session, 0 = disabled",
             "preferredProtocolFamily": "Preferred Protocol",
+            "preferredProtocolFamilyHint": "Prefer channels that natively support the current request protocol. Auto lets the router decide, while explicit choices bias routing toward a specific protocol family.",
             "protocolRoutingMode": "Routing Strategy",
             "protocolRoutingHint": "Prefer same-protocol passthrough when possible. If no same-protocol channel is available, routing falls back according to the selected strategy.",
             "responsesStatefulRouting": "Responses Route Affinity",
