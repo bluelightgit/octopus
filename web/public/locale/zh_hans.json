@@ -412,14 +412,14 @@
             "matchRegexInvalid": "正则无效",
             "firstTokenTimeOut": "首字超时",
             "firstTokenTimeOutHint": "单位秒，仅流式响应起效，0 表示不限制",
-            "sessionKeepTime": "会话保持",
-            "sessionKeepTimeHint": "单位秒，会话期间保持使用同一渠道，0 表示禁用",
+            "sessionKeepTime": "亲和保持时长",
+            "sessionKeepTimeHint": "单位秒，用于路由亲和记录的保留时长；0 表示不保留历史亲和记录。",
             "preferredProtocolFamily": "协议类型",
             "preferredProtocolFamilyHint": "优先选择能原生处理当前请求协议的渠道。Auto 由路由器自行判断，手动指定则会尽量偏向对应协议族。",
             "protocolRoutingMode": "路由策略",
             "protocolRoutingHint": "优先走与客户端相同协议的直通链路；若没有同协议渠道，再按路由策略决定是否允许跨协议转换。",
-            "responsesStatefulRouting": "Responses 路由亲和",
-            "responsesStatefulRoutingHint": "仅对 OpenAI Responses 请求生效。Auto 会在存在会话状态时把重试和续接固定到同一路由，Strict 从首轮开始绑定，Off 则关闭这层保护。",
+            "routeAffinityMode": "路由亲和",
+            "routeAffinityModeHint": "统一控制同一对话优先命中原路由的策略。Auto 会尽量复用历史路由，Strict 会在识别到已绑定路由后禁止跨路由重试，Off 则完全关闭。不同协议内部采用各自的状态识别方式。",
             "items": "已选模型",
             "addItem": "添加模型",
             "autoAdd": "自动添加",
@@ -440,7 +440,7 @@
             "anthropicMessages": "Anthropic Messages",
             "geminiContents": "Gemini Contents"
         },
-        "responsesStatefulRouting": {
+        "routeAffinityMode": {
             "off": "关闭",
             "auto": "自动",
             "strict": "严格"

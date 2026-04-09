@@ -12,7 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Accordion, AccordionContent, AccordionItem } from '@/components/ui/accordion';
 import { cn } from '@/lib/utils';
 import { getModelIcon } from '@/lib/model-icons';
-import { GroupProtocolFamily, GroupProtocolRoutingMode, GroupResponsesStatefulRoutingMode, type GroupMode } from '@/api/endpoints/group';
+import { GroupProtocolFamily, GroupProtocolRoutingMode, GroupRouteAffinityMode, type GroupMode } from '@/api/endpoints/group';
 import type { SelectedMember } from './ItemList';
 import { MemberList } from './ItemList';
 import { matchesGroupName, memberKey, normalizeKey, MODE_LABELS } from './utils';
@@ -28,7 +28,7 @@ export type GroupEditorValues = {
     session_keep_time: number;
     preferred_protocol_family: GroupProtocolFamily;
     protocol_routing_mode: GroupProtocolRoutingMode;
-    responses_stateful_routing: GroupResponsesStatefulRoutingMode;
+    route_affinity_mode: GroupRouteAffinityMode;
     members: SelectedMember[];
 };
 
@@ -288,7 +288,7 @@ export function GroupEditor({
     const [sessionKeepTime, setSessionKeepTime] = useState<number>(initial?.session_keep_time ?? 0);
     const [preferredProtocolFamily, setPreferredProtocolFamily] = useState<GroupProtocolFamily>(initial?.preferred_protocol_family ?? GroupProtocolFamily.Auto);
     const [protocolRoutingMode, setProtocolRoutingMode] = useState<GroupProtocolRoutingMode>(initial?.protocol_routing_mode ?? GroupProtocolRoutingMode.PreferSameProtocol);
-    const [responsesStatefulRouting, setResponsesStatefulRouting] = useState<GroupResponsesStatefulRoutingMode>(initial?.responses_stateful_routing ?? GroupResponsesStatefulRoutingMode.Auto);
+    const [routeAffinityMode, setRouteAffinityMode] = useState<GroupRouteAffinityMode>(initial?.route_affinity_mode ?? GroupRouteAffinityMode.Auto);
     const [selectedMembers, setSelectedMembers] = useState<SelectedMember[]>(initial?.members ?? []);
     const [removingIds, setRemovingIds] = useState<Set<string>>(new Set());
 
@@ -374,7 +374,7 @@ export function GroupEditor({
             session_keep_time: sessionKeepTime,
             preferred_protocol_family: preferredProtocolFamily,
             protocol_routing_mode: protocolRoutingMode,
-            responses_stateful_routing: responsesStatefulRouting,
+            route_affinity_mode: routeAffinityMode,
             members: selectedMembers,
         });
     };
@@ -504,18 +504,18 @@ export function GroupEditor({
 
                         <Field>
                             <LabelWithHint
-                                htmlFor="group-responses-stateful-routing"
-                                label={t('form.responsesStatefulRouting')}
-                                hint={t('form.responsesStatefulRoutingHint')}
+                                htmlFor="group-route-affinity-mode"
+                                label={t('form.routeAffinityMode')}
+                                hint={t('form.routeAffinityModeHint')}
                             />
-                            <Select value={responsesStatefulRouting} onValueChange={(value) => setResponsesStatefulRouting(value as GroupResponsesStatefulRoutingMode)}>
-                                <SelectTrigger id="group-responses-stateful-routing" className="w-full rounded-xl">
+                            <Select value={routeAffinityMode} onValueChange={(value) => setRouteAffinityMode(value as GroupRouteAffinityMode)}>
+                                <SelectTrigger id="group-route-affinity-mode" className="w-full rounded-xl">
                                     <SelectValue />
                                 </SelectTrigger>
                                 <SelectContent>
-                                    <SelectItem value={GroupResponsesStatefulRoutingMode.Off}>{t('responsesStatefulRouting.off')}</SelectItem>
-                                    <SelectItem value={GroupResponsesStatefulRoutingMode.Auto}>{t('responsesStatefulRouting.auto')}</SelectItem>
-                                    <SelectItem value={GroupResponsesStatefulRoutingMode.Strict}>{t('responsesStatefulRouting.strict')}</SelectItem>
+                                    <SelectItem value={GroupRouteAffinityMode.Off}>{t('routeAffinityMode.off')}</SelectItem>
+                                    <SelectItem value={GroupRouteAffinityMode.Auto}>{t('routeAffinityMode.auto')}</SelectItem>
+                                    <SelectItem value={GroupRouteAffinityMode.Strict}>{t('routeAffinityMode.strict')}</SelectItem>
                                 </SelectContent>
                             </Select>
                         </Field>

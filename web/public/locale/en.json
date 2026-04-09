@@ -412,14 +412,14 @@
             "matchRegexInvalid": "Invalid regex",
             "firstTokenTimeOut": "First Token Timeout",
             "firstTokenTimeOutHint": "Unit: seconds, only effective for streaming response, 0 = no limit",
-            "sessionKeepTime": "Session Keep Time",
-            "sessionKeepTimeHint": "Unit: seconds, keeps using the same channel within a session, 0 = disabled",
+            "sessionKeepTime": "Affinity Retention",
+            "sessionKeepTimeHint": "Unit: seconds, controls how long route affinity records are retained; 0 = do not retain historical affinity.",
             "preferredProtocolFamily": "Preferred Protocol",
             "preferredProtocolFamilyHint": "Prefer channels that natively support the current request protocol. Auto lets the router decide, while explicit choices bias routing toward a specific protocol family.",
             "protocolRoutingMode": "Routing Strategy",
             "protocolRoutingHint": "Prefer same-protocol passthrough when possible. If no same-protocol channel is available, routing falls back according to the selected strategy.",
-            "responsesStatefulRouting": "Responses Route Affinity",
-            "responsesStatefulRoutingHint": "Only applies to OpenAI Responses requests. Auto binds retries and continuations to the same upstream route when stateful context is present, Strict binds from the first turn, Off disables this protection.",
+            "routeAffinityMode": "Route Affinity",
+            "routeAffinityModeHint": "Controls whether the same conversation should prefer the same upstream route. Auto reuses known routes when possible, Strict blocks cross-route retries once a route has been identified, and Off disables affinity entirely. Different protocols detect route state differently under the hood.",
             "items": "Selected Models",
             "addItem": "Add Model",
             "autoAdd": "Auto Add",
@@ -440,7 +440,7 @@
             "anthropicMessages": "Anthropic Messages",
             "geminiContents": "Gemini Contents"
         },
-        "responsesStatefulRouting": {
+        "routeAffinityMode": {
             "off": "Off",
             "auto": "Auto",
             "strict": "Strict"

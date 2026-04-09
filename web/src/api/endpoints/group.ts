@@ -38,11 +38,14 @@ export enum GroupProtocolRoutingMode {
     AllowCrossProtocol = 'allow_cross_protocol',
 }
 
-export enum GroupResponsesStatefulRoutingMode {
+export enum GroupRouteAffinityMode {
     Off = 'off',
     Auto = 'auto',
     Strict = 'strict',
 }
+
+export const GroupResponsesStatefulRoutingMode = GroupRouteAffinityMode;
+export type GroupResponsesStatefulRoutingMode = GroupRouteAffinityMode;
 
 /**
  * 分组信息
@@ -56,6 +59,7 @@ export interface Group {
     session_keep_time?: number;
     preferred_protocol_family?: GroupProtocolFamily;
     protocol_routing_mode?: GroupProtocolRoutingMode;
+    route_affinity_mode?: GroupRouteAffinityMode;
     responses_stateful_routing?: GroupResponsesStatefulRoutingMode;
     items?: GroupItem[];
 }
@@ -91,7 +95,8 @@ export interface GroupUpdateRequest {
     session_keep_time?: number;           // 仅在会话保持时间变更时发送
     preferred_protocol_family?: GroupProtocolFamily; // 仅在协议族变更时发送
     protocol_routing_mode?: GroupProtocolRoutingMode; // 仅在协议路由模式变更时发送
-    responses_stateful_routing?: GroupResponsesStatefulRoutingMode; // 仅在 Responses 亲和策略变更时发送
+    route_affinity_mode?: GroupRouteAffinityMode; // 仅在路由亲和策略变更时发送
+    responses_stateful_routing?: GroupResponsesStatefulRoutingMode; // 兼容旧字段
     items_to_add?: GroupItemAddRequest[];    // 新增的 items
     items_to_update?: GroupItemUpdateRequest[]; // 更新的 items (priority 变更)
     items_to_delete?: number[];              // 删除的 item IDs
