@@ -96,6 +96,7 @@ type relayRequest struct {
 	apiKeyID             int
 	groupID              int
 	requestModel         string
+	routeAffinityMode    dbmodel.GroupRouteAffinityMode
 	iter                 *balancer.Iterator
 	responsesStateful    *responsesStatefulRequestContext
 	conversationAffinity *conversationAffinityRequestContext

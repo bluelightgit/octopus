@@ -14,9 +14,18 @@ import (
 )
 
 type conversationAffinityRequestContext struct {
+	Mode              dbmodel.GroupRouteAffinityMode
 	LookupKeys        []string
 	SelectedLookupKey string
 	PreferredRoute    *affinityRoute
+}
+
+func (c *conversationAffinityRequestContext) HasPreferredRoute() bool {
+	return c != nil && c.PreferredRoute != nil
+}
+
+func (c *conversationAffinityRequestContext) BlocksCrossRouteFailover() bool {
+	return c != nil && c.Mode == dbmodel.GroupRouteAffinityModeStrict && c.PreferredRoute != nil
 }
 
 type canonicalConversationEnvelope struct {
@@ -91,6 +100,10 @@ func buildConversationAffinityRequestContext(group dbmodel.Group, apiKeyID int, 
 	if req == nil || req.RawOnly || group.SessionKeepTime <= 0 {
 		return nil
 	}
+	mode := group.GetRouteAffinityMode()
+	if mode == dbmodel.GroupRouteAffinityModeOff {
+		return nil
+	}
 	if !supportsConversationPrefixAffinity(req.RawAPIFormat) {
 		return nil
 	}
@@ -103,6 +116,7 @@ func buildConversationAffinityRequestContext(group dbmodel.Group, apiKeyID int, 
 	ttl := time.Duration(group.SessionKeepTime) * time.Second
 	preferredRoute, selectedLookupKey := getConversationAffinityRoute(apiKeyID, lookupKeys, ttl)
 	return &conversationAffinityRequestContext{
+		Mode:              mode,
 		LookupKeys:        lookupKeys,
 		SelectedLookupKey: selectedLookupKey,
 		PreferredRoute:    preferredRoute,

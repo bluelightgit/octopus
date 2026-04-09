@@ -40,9 +40,9 @@ func TestParseResponsesRequestState(t *testing.T) {
 
 func TestResponsesStatefulContextPinsExactRoute(t *testing.T) {
 	group := dbmodel.Group{
-		ID:                       42,
-		Name:                     "gpt-5.2",
-		ResponsesStatefulRouting: dbmodel.GroupResponsesStatefulRoutingModeAuto,
+		ID:                42,
+		Name:              "gpt-5.2",
+		RouteAffinityMode: dbmodel.GroupRouteAffinityModeAuto,
 	}
 	req := &transformerModel.InternalLLMRequest{
 		RawAPIFormat: transformerModel.APIFormatOpenAIResponse,
@@ -89,5 +89,16 @@ func TestResponsesAffinityTTLUsesAtLeastOneDay(t *testing.T) {
 	group := dbmodel.Group{SessionKeepTime: int((2 * time.Hour) / time.Second)}
 	if got := responsesAffinityTTL(group); got < 24*time.Hour {
 		t.Fatalf("expected ttl >= 24h, got %s", got)
+	}
+}
+
+func TestResponsesStatefulContextUsesUnifiedRouteAffinityMode(t *testing.T) {
+	group := dbmodel.Group{ID: 42, Name: "gpt-5.2", RouteAffinityMode: dbmodel.GroupRouteAffinityModeOff}
+	req := &transformerModel.InternalLLMRequest{
+		RawAPIFormat: transformerModel.APIFormatOpenAIResponse,
+		RawRequest:   []byte(`{"model":"gpt-5.2","previous_response_id":"resp_prev","input":"hi"}`),
+	}
+	if ctx := buildResponsesStatefulRequestContext(group, 1001, "gpt-5.2", req); ctx != nil {
+		t.Fatal("expected route affinity off to disable responses stateful routing")
 	}
 }

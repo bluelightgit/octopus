@@ -31,9 +31,9 @@ func isValidGroupProtocolRoutingMode(v model.GroupProtocolRoutingMode) bool {
 	}
 }
 
-func isValidResponsesStatefulRoutingMode(v model.GroupResponsesStatefulRoutingMode) bool {
+func isValidGroupRouteAffinityMode(v model.GroupRouteAffinityMode) bool {
 	switch v {
-	case "", model.GroupResponsesStatefulRoutingModeOff, model.GroupResponsesStatefulRoutingModeAuto, model.GroupResponsesStatefulRoutingModeStrict:
+	case "", model.GroupRouteAffinityModeOff, model.GroupRouteAffinityModeAuto, model.GroupRouteAffinityModeStrict:
 		return true
 	default:
 		return false
@@ -89,8 +89,8 @@ func createGroup(c *gin.Context) {
 		resp.Error(c, http.StatusBadRequest, "invalid protocol_routing_mode")
 		return
 	}
-	if !isValidResponsesStatefulRoutingMode(group.ResponsesStatefulRouting) {
-		resp.Error(c, http.StatusBadRequest, "invalid responses_stateful_routing")
+	if !isValidGroupRouteAffinityMode(model.ResolveGroupRouteAffinityMode(group.RouteAffinityMode, group.ResponsesStatefulRouting)) {
+		resp.Error(c, http.StatusBadRequest, "invalid route_affinity_mode")
 		return
 	}
 	if group.MatchRegex != "" {
@@ -121,7 +121,11 @@ func updateGroup(c *gin.Context) {
 		resp.Error(c, http.StatusBadRequest, "invalid protocol_routing_mode")
 		return
 	}
-	if req.ResponsesStatefulRouting != nil && !isValidResponsesStatefulRoutingMode(*req.ResponsesStatefulRouting) {
+	if req.RouteAffinityMode != nil && !isValidGroupRouteAffinityMode(*req.RouteAffinityMode) {
+		resp.Error(c, http.StatusBadRequest, "invalid route_affinity_mode")
+		return
+	}
+	if req.ResponsesStatefulRouting != nil && !isValidGroupRouteAffinityMode(model.GroupRouteAffinityMode(*req.ResponsesStatefulRouting)) {
 		resp.Error(c, http.StatusBadRequest, "invalid responses_stateful_routing")
 		return
 	}

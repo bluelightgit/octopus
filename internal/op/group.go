@@ -14,6 +14,15 @@ import (
 var groupCache = cache.New[int, model.Group](16)
 var groupMap = cache.New[string, model.Group](16)
 
+func syncGroupRouteAffinityFields(group *model.Group) {
+	if group == nil {
+		return
+	}
+	normalized := group.GetRouteAffinityMode()
+	group.RouteAffinityMode = normalized
+	group.ResponsesStatefulRouting = normalized
+}
+
 func GroupList(ctx context.Context) ([]model.Group, error) {
 	groups := make([]model.Group, 0, groupCache.Len())
 	for _, group := range groupCache.GetAll() {
@@ -67,9 +76,8 @@ func GroupCreate(group *model.Group, ctx context.Context) error {
 	if group.ProtocolRoutingMode == "" {
 		group.ProtocolRoutingMode = model.GroupProtocolRoutingModePreferSameProtocol
 	}
-	if group.ResponsesStatefulRouting == "" {
-		group.ResponsesStatefulRouting = model.GroupResponsesStatefulRoutingModeAuto
-	}
+	group.RouteAffinityMode = model.ResolveGroupRouteAffinityMode(group.RouteAffinityMode, group.ResponsesStatefulRouting)
+	syncGroupRouteAffinityFields(group)
 	if err := db.GetDB().WithContext(ctx).Create(group).Error; err != nil {
 		return err
 	}
@@ -123,9 +131,9 @@ func GroupUpdate(req *model.GroupUpdateRequest, ctx context.Context) (*model.Gro
 		selectFields = append(selectFields, "protocol_routing_mode")
 		updates.ProtocolRoutingMode = *req.ProtocolRoutingMode
 	}
-	if req.ResponsesStatefulRouting != nil {
+	if req.RouteAffinityMode != nil || req.ResponsesStatefulRouting != nil {
 		selectFields = append(selectFields, "responses_stateful_routing")
-		updates.ResponsesStatefulRouting = *req.ResponsesStatefulRouting
+		updates.RouteAffinityMode = model.ResolveGroupRouteAffinityMode(ptrRouteAffinityModeValue(req.RouteAffinityMode), ptrLegacyRouteAffinityModeValue(req.ResponsesStatefulRouting))
 	}
 
 	if len(selectFields) > 0 {
@@ -195,6 +203,7 @@ func GroupUpdate(req *model.GroupUpdateRequest, ctx context.Context) (*model.Gro
 	}
 
 	group, _ := groupCache.Get(req.ID)
+	syncGroupRouteAffinityFields(&group)
 	if oldName != "" && oldName != group.Name {
 		groupMap.Del(oldName)
 	}
@@ -382,6 +391,7 @@ func groupRefreshCache(ctx context.Context) error {
 		return err
 	}
 	for _, group := range groups {
+		syncGroupRouteAffinityFields(&group)
 		groupCache.Set(group.ID, group)
 		groupMap.Set(group.Name, group)
 	}
@@ -395,6 +405,7 @@ func groupRefreshCacheByID(id int, ctx context.Context) error {
 		First(&group, id).Error; err != nil {
 		return err
 	}
+	syncGroupRouteAffinityFields(&group)
 	groupCache.Set(group.ID, group)
 	groupMap.Set(group.Name, group)
 	return nil
@@ -412,8 +423,23 @@ func groupRefreshCacheByIDs(ids []int, ctx context.Context) error {
 		return err
 	}
 	for _, group := range groups {
+		syncGroupRouteAffinityFields(&group)
 		groupCache.Set(group.ID, group)
 		groupMap.Set(group.Name, group)
 	}
 	return nil
+}
+
+func ptrRouteAffinityModeValue(v *model.GroupRouteAffinityMode) model.GroupRouteAffinityMode {
+	if v == nil {
+		return ""
+	}
+	return *v
+}
+
+func ptrLegacyRouteAffinityModeValue(v *model.GroupResponsesStatefulRoutingMode) model.GroupResponsesStatefulRoutingMode {
+	if v == nil {
+		return ""
+	}
+	return *v
 }

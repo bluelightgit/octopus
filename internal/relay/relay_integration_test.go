@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	dbmodel "github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/transformer/inbound"
+	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
 	"github.com/gin-gonic/gin"
 )
@@ -1438,4 +1440,79 @@ func TestRelayHandler_ResponsesUnknownEventAfterClientWrite_DoesNotKeepStreamAli
 		"response.output_text.delta",
 		"response.heartbeat",
 	)
+}
+
+func TestRelayHandler_ConversationAffinityStrictStopsCrossRouteRetry(t *testing.T) {
+	ctx := setupRelayTestEnv(t)
+	apiKey := createRelayTestAPIKey(t, ctx)
+
+	requestModel := "conversation-affinity-strict"
+	var firstHits int32
+	var secondHits int32
+
+	firstUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&firstHits, 1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"error":{"message":"strict pinned route failed"}}`))
+	}))
+	defer firstUpstream.Close()
+
+	secondUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&secondHits, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","object":"chat.completion","created":0,"model":"` + requestModel + `","choices":[{"index":0,"message":{"role":"assistant","content":"fallback"},"finish_reason":"stop"}]}`))
+	}))
+	defer secondUpstream.Close()
+
+	firstChannel := createRelayTestChannel(t, ctx, "chat-strict-a", outbound.OutboundTypeOpenAIChat, firstUpstream.URL+"/v1")
+	secondChannel := createRelayTestChannel(t, ctx, "chat-strict-b", outbound.OutboundTypeOpenAIChat, secondUpstream.URL+"/v1")
+
+	group := &dbmodel.Group{Name: requestModel, Mode: dbmodel.GroupModeFailover, SessionKeepTime: int((5 * time.Minute) / time.Second), RouteAffinityMode: dbmodel.GroupRouteAffinityModeStrict}
+	if err := op.GroupCreate(group, ctx); err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{GroupID: group.ID, ChannelID: firstChannel.ID, ModelName: requestModel, Priority: 1, Weight: 1}, ctx); err != nil {
+		t.Fatalf("add first channel: %v", err)
+	}
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{GroupID: group.ID, ChannelID: secondChannel.ID, ModelName: requestModel, Priority: 2, Weight: 1}, ctx); err != nil {
+		t.Fatalf("add second channel: %v", err)
+	}
+
+	prefillReq := &transformerModel.InternalLLMRequest{
+		RawAPIFormat: transformerModel.APIFormatOpenAIChatCompletion,
+		Messages: []transformerModel.Message{
+			{Role: "user", Content: transformerModel.MessageContent{Content: strPtr("hello")}},
+			{Role: "assistant", Content: transformerModel.MessageContent{Content: strPtr("hi")}},
+			{Role: "user", Content: transformerModel.MessageContent{Content: strPtr("continue")}},
+		},
+	}
+	prefillCtx := buildConversationAffinityRequestContext(*group, apiKey.ID, requestModel, prefillReq)
+	if prefillCtx == nil || len(prefillCtx.LookupKeys) == 0 {
+		t.Fatal("expected conversation affinity lookup keys")
+	}
+	rememberConversationAffinityRoute(apiKey.ID, prefillCtx.LookupKeys, affinityRoute{ChannelID: firstChannel.ID, ChannelKeyID: firstChannel.Keys[0].ID, BaseURL: firstUpstream.URL + "/v1"})
+
+	reqBody := []byte(`{"model":"` + requestModel + `","messages":[{"role":"user","content":"hello"},{"role":"assistant","content":"hi"},{"role":"user","content":"continue"}]}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	c.Set("api_key_id", apiKey.ID)
+
+	Handler(inbound.InboundTypeOpenAIChat, c)
+
+	if got := atomic.LoadInt32(&firstHits); got != 1 {
+		t.Fatalf("expected pinned channel to be tried once, got %d", got)
+	}
+	if got := atomic.LoadInt32(&secondHits); got != 0 {
+		t.Fatalf("expected strict conversation affinity to block fallback, got %d hits", got)
+	}
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 from pinned route failure, got %d body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "fallback") {
+		t.Fatalf("expected no fallback response, got %s", w.Body.String())
+	}
 }

@@ -5,7 +5,10 @@ type GroupMode int
 type GroupProtocolFamily string
 
 type GroupProtocolRoutingMode string
-type GroupResponsesStatefulRoutingMode string
+
+type GroupRouteAffinityMode string
+
+type GroupResponsesStatefulRoutingMode = GroupRouteAffinityMode
 
 const (
 	GroupModeRoundRobin GroupMode = 1 // 轮询：依次循环选择渠道
@@ -29,9 +32,15 @@ const (
 )
 
 const (
-	GroupResponsesStatefulRoutingModeOff    GroupResponsesStatefulRoutingMode = "off"
-	GroupResponsesStatefulRoutingModeAuto   GroupResponsesStatefulRoutingMode = "auto"
-	GroupResponsesStatefulRoutingModeStrict GroupResponsesStatefulRoutingMode = "strict"
+	GroupRouteAffinityModeOff    GroupRouteAffinityMode = "off"
+	GroupRouteAffinityModeAuto   GroupRouteAffinityMode = "auto"
+	GroupRouteAffinityModeStrict GroupRouteAffinityMode = "strict"
+)
+
+const (
+	GroupResponsesStatefulRoutingModeOff    = GroupRouteAffinityModeOff
+	GroupResponsesStatefulRoutingModeAuto   = GroupRouteAffinityModeAuto
+	GroupResponsesStatefulRoutingModeStrict = GroupRouteAffinityModeStrict
 )
 
 type Group struct {
@@ -43,7 +52,8 @@ type Group struct {
 	SessionKeepTime          int                               `json:"session_keep_time"`
 	PreferredProtocolFamily  GroupProtocolFamily               `json:"preferred_protocol_family" gorm:"default:auto"`
 	ProtocolRoutingMode      GroupProtocolRoutingMode          `json:"protocol_routing_mode" gorm:"default:prefer_same_protocol"`
-	ResponsesStatefulRouting GroupResponsesStatefulRoutingMode `json:"responses_stateful_routing" gorm:"default:auto"`
+	RouteAffinityMode        GroupRouteAffinityMode            `json:"route_affinity_mode" gorm:"column:responses_stateful_routing;default:auto"`
+	ResponsesStatefulRouting GroupResponsesStatefulRoutingMode `json:"responses_stateful_routing,omitempty" gorm:"-"`
 	Items                    []GroupItem                       `json:"items,omitempty" gorm:"foreignKey:GroupID"`
 }
 
@@ -65,6 +75,7 @@ type GroupUpdateRequest struct {
 	SessionKeepTime          *int                               `json:"session_keep_time,omitempty"`
 	PreferredProtocolFamily  *GroupProtocolFamily               `json:"preferred_protocol_family,omitempty"`
 	ProtocolRoutingMode      *GroupProtocolRoutingMode          `json:"protocol_routing_mode,omitempty"`
+	RouteAffinityMode        *GroupRouteAffinityMode            `json:"route_affinity_mode,omitempty"`
 	ResponsesStatefulRouting *GroupResponsesStatefulRoutingMode `json:"responses_stateful_routing,omitempty"`
 	ItemsToAdd               []GroupItemAddRequest              `json:"items_to_add,omitempty"`
 	ItemsToUpdate            []GroupItemUpdateRequest           `json:"items_to_update,omitempty"`
@@ -107,11 +118,26 @@ func (g Group) GetProtocolRoutingMode() GroupProtocolRoutingMode {
 	}
 }
 
-func (g Group) GetResponsesStatefulRoutingMode() GroupResponsesStatefulRoutingMode {
-	switch g.ResponsesStatefulRouting {
-	case GroupResponsesStatefulRoutingModeOff, GroupResponsesStatefulRoutingModeStrict:
-		return g.ResponsesStatefulRouting
+func NormalizeGroupRouteAffinityMode(v GroupRouteAffinityMode) GroupRouteAffinityMode {
+	switch v {
+	case GroupRouteAffinityModeOff, GroupRouteAffinityModeStrict:
+		return v
 	default:
-		return GroupResponsesStatefulRoutingModeAuto
+		return GroupRouteAffinityModeAuto
 	}
+}
+
+func ResolveGroupRouteAffinityMode(primary GroupRouteAffinityMode, legacy GroupResponsesStatefulRoutingMode) GroupRouteAffinityMode {
+	if primary != "" {
+		return NormalizeGroupRouteAffinityMode(primary)
+	}
+	return NormalizeGroupRouteAffinityMode(GroupRouteAffinityMode(legacy))
+}
+
+func (g Group) GetRouteAffinityMode() GroupRouteAffinityMode {
+	return ResolveGroupRouteAffinityMode(g.RouteAffinityMode, g.ResponsesStatefulRouting)
+}
+
+func (g Group) GetResponsesStatefulRoutingMode() GroupResponsesStatefulRoutingMode {
+	return g.GetRouteAffinityMode()
 }

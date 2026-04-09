@@ -9,7 +9,7 @@ import (
 )
 
 func TestBuildConversationAffinityContextReusesHistoricalPrefix(t *testing.T) {
-	group := dbmodel.Group{ID: 42, SessionKeepTime: int((30 * time.Minute) / time.Second)}
+	group := dbmodel.Group{ID: 42, SessionKeepTime: int((30 * time.Minute) / time.Second), RouteAffinityMode: dbmodel.GroupRouteAffinityModeAuto}
 	apiKeyID := 1001
 	requestModel := "claude-sonnet-4"
 
@@ -59,7 +59,7 @@ func TestBuildConversationAffinityContextReusesHistoricalPrefix(t *testing.T) {
 }
 
 func TestBuildConversationAffinityContextSkipsResponsesAndRawOnly(t *testing.T) {
-	group := dbmodel.Group{ID: 42, SessionKeepTime: int((10 * time.Minute) / time.Second)}
+	group := dbmodel.Group{ID: 42, SessionKeepTime: int((10 * time.Minute) / time.Second), RouteAffinityMode: dbmodel.GroupRouteAffinityModeAuto}
 
 	responsesReq := &transformerModel.InternalLLMRequest{
 		RawAPIFormat: transformerModel.APIFormatOpenAIResponse,
@@ -80,3 +80,25 @@ func TestBuildConversationAffinityContextSkipsResponsesAndRawOnly(t *testing.T) 
 }
 
 func strPtr(s string) *string { return &s }
+
+func TestBuildConversationAffinityContextDisabledWhenRouteAffinityOff(t *testing.T) {
+	group := dbmodel.Group{ID: 42, SessionKeepTime: int((10 * time.Minute) / time.Second), RouteAffinityMode: dbmodel.GroupRouteAffinityModeOff}
+	req := &transformerModel.InternalLLMRequest{
+		RawAPIFormat: transformerModel.APIFormatAnthropicMessage,
+		Messages:     []transformerModel.Message{{Role: "user", Content: transformerModel.MessageContent{Content: strPtr("hello")}}},
+	}
+	if ctx := buildConversationAffinityRequestContext(group, 1, "claude-sonnet-4", req); ctx != nil {
+		t.Fatal("expected route affinity off to disable conversation affinity")
+	}
+}
+
+func TestConversationAffinityStrictBlocksCrossRouteFailover(t *testing.T) {
+	ctx := &conversationAffinityRequestContext{Mode: dbmodel.GroupRouteAffinityModeStrict}
+	if ctx.BlocksCrossRouteFailover() {
+		t.Fatal("strict mode should not block before a preferred route is known")
+	}
+	ctx.PreferredRoute = &affinityRoute{ChannelID: 7}
+	if !ctx.BlocksCrossRouteFailover() {
+		t.Fatal("strict mode should block after a preferred route is known")
+	}
+}
