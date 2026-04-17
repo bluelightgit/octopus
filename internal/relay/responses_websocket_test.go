@@ -757,3 +757,202 @@ func TestHandleResponsesWebsocket_ClosesAfterConfiguredLifetime(t *testing.T) {
 		t.Fatalf("unexpected close reason: %s", closeErr.Text)
 	}
 }
+
+func TestHandleResponsesWebsocket_ReusesPinnedRouteForContinuation(t *testing.T) {
+	ctx := setupRelayTestEnv(t)
+	apiKey := createRelayTestAPIKey(t, ctx)
+
+	requestModel := "responses-ws-continuation-affinity"
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	var firstHits int32
+	firstUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit := atomic.AddInt32(&firstHits, 1)
+		if hit == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte("handshake failed"))
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+		_, _, _ = conn.ReadMessage()
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.created","response":{"id":"resp_wrong","object":"response","model":"first-upstream","status":"in_progress","output":[]}}`))
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":{"id":"resp_wrong","object":"response","model":"first-upstream","status":"completed","output":[]}}`))
+		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "done"), time.Now().Add(time.Second))
+	}))
+	defer firstUpstream.Close()
+
+	var secondHits int32
+	secondUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit := atomic.AddInt32(&secondHits, 1)
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+		_, _, _ = conn.ReadMessage()
+		responseID := "resp_chain"
+		if hit > 1 {
+			responseID = "resp_next"
+		}
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.created","response":{"id":"`+responseID+`","object":"response","model":"second-upstream","status":"in_progress","output":[]}}`))
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":{"id":"`+responseID+`","object":"response","model":"second-upstream","status":"completed","output":[]}}`))
+		_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "done"), time.Now().Add(time.Second))
+	}))
+	defer secondUpstream.Close()
+
+	firstChannel := createRelayTestChannel(t, ctx, "responses-ws-first", outbound.OutboundTypeOpenAIResponse, firstUpstream.URL+"/v1")
+	secondChannel := createRelayTestChannel(t, ctx, "responses-ws-second", outbound.OutboundTypeOpenAIResponse, secondUpstream.URL+"/v1")
+	group := createResponsesWebsocketGroup(t, ctx, requestModel, true)
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{GroupID: group.ID, ChannelID: firstChannel.ID, ModelName: "first-upstream", Priority: 1, Weight: 1}, ctx); err != nil {
+		t.Fatalf("add first channel failed: %v", err)
+	}
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{GroupID: group.ID, ChannelID: secondChannel.ID, ModelName: "second-upstream", Priority: 2, Weight: 1}, ctx); err != nil {
+		t.Fatalf("add second channel failed: %v", err)
+	}
+
+	octopus := newResponsesWebsocketTestServer(apiKey.ID, requestModel)
+	defer octopus.Close()
+
+	readEvents := func(conn *websocket.Conn) []string {
+		t.Helper()
+		events := make([]string, 0, 2)
+		for {
+			_, payload, err := conn.ReadMessage()
+			if err != nil {
+				if websocket.IsCloseError(err, websocket.CloseNormalClosure) || websocket.IsCloseError(err, websocket.CloseGoingAway) {
+					break
+				}
+				t.Fatalf("read message failed: %v", err)
+			}
+			events = append(events, string(payload))
+		}
+		return events
+	}
+
+	conn1, _, err := websocket.DefaultDialer.Dial(websocketURLFromHTTP(octopus.URL)+"/v1/responses", nil)
+	if err != nil {
+		t.Fatalf("dial first websocket failed: %v", err)
+	}
+	if err := conn1.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"responses-ws-continuation-affinity","input":"hi"}`)); err != nil {
+		t.Fatalf("write first request failed: %v", err)
+	}
+	firstEvents := readEvents(conn1)
+	_ = conn1.Close()
+	if len(firstEvents) == 0 || !strings.Contains(firstEvents[0], `"id":"resp_chain"`) {
+		t.Fatalf("expected first request to bind resp_chain on second upstream, got %#v", firstEvents)
+	}
+	if got := atomic.LoadInt32(&firstHits); got != 1 {
+		t.Fatalf("expected first upstream to be attempted once during first request, got %d", got)
+	}
+	if got := atomic.LoadInt32(&secondHits); got != 1 {
+		t.Fatalf("expected second upstream to serve first request once, got %d", got)
+	}
+
+	conn2, _, err := websocket.DefaultDialer.Dial(websocketURLFromHTTP(octopus.URL)+"/v1/responses", nil)
+	if err != nil {
+		t.Fatalf("dial second websocket failed: %v", err)
+	}
+	if err := conn2.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"responses-ws-continuation-affinity","previous_response_id":"resp_chain","input":"next"}`)); err != nil {
+		t.Fatalf("write continuation request failed: %v", err)
+	}
+	secondEvents := readEvents(conn2)
+	_ = conn2.Close()
+	if len(secondEvents) == 0 || !strings.Contains(secondEvents[0], `"id":"resp_next"`) {
+		t.Fatalf("expected continuation to reuse second upstream, got %#v", secondEvents)
+	}
+	if got := atomic.LoadInt32(&firstHits); got != 1 {
+		t.Fatalf("expected pinned continuation to skip first upstream, got %d attempts", got)
+	}
+	if got := atomic.LoadInt32(&secondHits); got != 2 {
+		t.Fatalf("expected second upstream to serve continuation, got %d", got)
+	}
+}
+
+func TestHandleResponsesWebsocket_DoesNotFallbackWhenPinnedRouteUnavailable(t *testing.T) {
+	ctx := setupRelayTestEnv(t)
+	apiKey := createRelayTestAPIKey(t, ctx)
+
+	requestModel := "responses-ws-pinned-unavailable"
+	firstChannel := createRelayTestChannel(t, ctx, "responses-ws-first", outbound.OutboundTypeOpenAIResponse, "https://example.invalid/v1")
+	var secondHits int32
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	secondUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&secondHits, 1)
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer secondUpstream.Close()
+	secondChannel := createRelayTestChannel(t, ctx, "responses-ws-second", outbound.OutboundTypeOpenAIResponse, secondUpstream.URL+"/v1")
+	group := createResponsesWebsocketGroup(t, ctx, requestModel, true)
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{GroupID: group.ID, ChannelID: firstChannel.ID, ModelName: "first-upstream", Priority: 1, Weight: 1}, ctx); err != nil {
+		t.Fatalf("add first channel failed: %v", err)
+	}
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{GroupID: group.ID, ChannelID: secondChannel.ID, ModelName: "second-upstream", Priority: 2, Weight: 1}, ctx); err != nil {
+		t.Fatalf("add second channel failed: %v", err)
+	}
+
+	loadedGroup, err := op.GroupGetEnabledMap(requestModel, ctx)
+	if err != nil {
+		t.Fatalf("GroupGetEnabledMap failed: %v", err)
+	}
+	prevID := "resp_prev_unavailable"
+	lookupKey := responsesAffinityKeyForResponseID(loadedGroup.ID, requestModel, prevID)
+	rememberResponsesAffinityRoute(apiKey.ID, []string{lookupKey}, affinityRoute{
+		ChannelID:    firstChannel.ID,
+		ChannelKeyID: firstChannel.Keys[0].ID,
+		BaseURL:      firstChannel.BaseUrls[0].URL,
+	})
+	t.Cleanup(func() {
+		responsesAffinityStore.Delete(responsesAffinityStoreKey(apiKey.ID, lookupKey))
+	})
+
+	disabled := false
+	if _, err := op.ChannelUpdate(&dbmodel.ChannelUpdateRequest{ID: firstChannel.ID, KeysToUpdate: []dbmodel.ChannelKeyUpdateRequest{{ID: firstChannel.Keys[0].ID, Enabled: &disabled}}}, ctx); err != nil {
+		t.Fatalf("disable pinned key failed: %v", err)
+	}
+
+	octopus := newResponsesWebsocketTestServer(apiKey.ID, requestModel)
+	defer octopus.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial(websocketURLFromHTTP(octopus.URL)+"/v1/responses", nil)
+	if err != nil {
+		t.Fatalf("dial octopus websocket failed: %v", err)
+	}
+	defer conn.Close()
+
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"responses-ws-pinned-unavailable","previous_response_id":"resp_prev_unavailable","input":"hi"}`)); err != nil {
+		t.Fatalf("write first frame failed: %v", err)
+	}
+	_, _, err = conn.ReadMessage()
+	if err == nil {
+		t.Fatal("expected websocket close error")
+	}
+	closeErr, ok := err.(*websocket.CloseError)
+	if !ok {
+		t.Fatalf("expected close error, got %T: %v", err, err)
+	}
+	if closeErr.Code != websocket.CloseTryAgainLater {
+		t.Fatalf("unexpected close code: %d", closeErr.Code)
+	}
+	if !strings.Contains(closeErr.Text, "pinned") {
+		t.Fatalf("unexpected close reason: %s", closeErr.Text)
+	}
+	if got := atomic.LoadInt32(&secondHits); got != 0 {
+		t.Fatalf("expected no fallback to second upstream, got %d hits", got)
+	}
+
+	logItem := waitForLatestRelayLog(t, ctx)
+	if !strings.Contains(logItem.Error, "pinned") {
+		t.Fatalf("expected pinned route error in relay log, got %q", logItem.Error)
+	}
+}
