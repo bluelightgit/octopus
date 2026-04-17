@@ -420,6 +420,8 @@
             "protocolRoutingHint": "優先走與客戶端相同協議的直通鏈路；若沒有同協議供應源，再按路由策略決定是否允許跨協議轉換。",
             "routeAffinityMode": "路由親和",
             "routeAffinityModeHint": "統一控制同一對話優先命中原路由的策略。Auto 會盡量復用歷史路由，Strict 會在識別到已綁定路由後禁止跨路由重試，Off 則完全關閉。不同協議內部採用各自的狀態識別方式。",
+            "responsesWebsocketEnabled": "啟用 Responses WebSocket",
+            "responsesWebsocketEnabledHint": "僅對 OpenAI Responses 分組生效。開啟後允許客戶端透過 GET /v1/responses WebSocket 連入該分組。",
             "items": "已選模型",
             "addItem": "新增模型",
             "autoAdd": "自動新增",

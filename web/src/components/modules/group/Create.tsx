@@ -39,7 +39,7 @@ export function CreateDialogContent() {
                     submitText={t('create.submit')}
                     submittingText={t('create.submitting')}
                     isSubmitting={createGroup.isPending}
-                    onSubmit={({ name, match_regex, mode, first_token_time_out, session_keep_time, preferred_protocol_family, protocol_routing_mode, route_affinity_mode, members }) => {
+                    onSubmit={({ name, match_regex, mode, first_token_time_out, session_keep_time, preferred_protocol_family, protocol_routing_mode, route_affinity_mode, responses_websocket_enabled, members }) => {
                         const items: GroupItem[] = members.map((member, index) => ({
                             channel_id: member.channel_id,
                             model_name: member.name,
@@ -48,7 +48,7 @@ export function CreateDialogContent() {
                         }));
 
                         createGroup.mutate(
-                            { name, mode, match_regex: match_regex ?? '', first_token_time_out: first_token_time_out ?? 0, session_keep_time: session_keep_time ?? 0, preferred_protocol_family: preferred_protocol_family ?? GroupProtocolFamily.Auto, protocol_routing_mode: protocol_routing_mode ?? GroupProtocolRoutingMode.PreferSameProtocol, route_affinity_mode: route_affinity_mode ?? GroupRouteAffinityMode.Auto, items },
+                            { name, mode, match_regex: match_regex ?? '', first_token_time_out: first_token_time_out ?? 0, session_keep_time: session_keep_time ?? 0, preferred_protocol_family: preferred_protocol_family ?? GroupProtocolFamily.Auto, protocol_routing_mode: protocol_routing_mode ?? GroupProtocolRoutingMode.PreferSameProtocol, route_affinity_mode: route_affinity_mode ?? GroupRouteAffinityMode.Auto, responses_websocket_enabled: responses_websocket_enabled ?? false, items },
                             {
                                 onSuccess: () => setIsOpen(false),
                                 onError: (error) => toast.error(t('toast.createFailed'), { description: error.message }),

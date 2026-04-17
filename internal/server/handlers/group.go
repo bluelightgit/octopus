@@ -40,6 +40,29 @@ func isValidGroupRouteAffinityMode(v model.GroupRouteAffinityMode) bool {
 	}
 }
 
+func normalizeResponsesWebsocketEnabled(group *model.Group) {
+	if group == nil {
+		return
+	}
+	if group.GetPreferredProtocolFamily() != model.GroupProtocolFamilyOpenAIResponses {
+		group.ResponsesWebsocketEnabled = false
+	}
+}
+
+func normalizeResponsesWebsocketEnabledUpdate(req *model.GroupUpdateRequest, current model.Group) {
+	if req == nil {
+		return
+	}
+	nextPreferredProtocolFamily := current.GetPreferredProtocolFamily()
+	if req.PreferredProtocolFamily != nil {
+		nextPreferredProtocolFamily = *req.PreferredProtocolFamily
+	}
+	if nextPreferredProtocolFamily != model.GroupProtocolFamilyOpenAIResponses {
+		disabled := false
+		req.ResponsesWebsocketEnabled = &disabled
+	}
+}
+
 func init() {
 	router.NewGroupRouter("/api/v1/group").
 		Use(middleware.Auth()).
@@ -93,6 +116,7 @@ func createGroup(c *gin.Context) {
 		resp.Error(c, http.StatusBadRequest, "invalid route_affinity_mode")
 		return
 	}
+	normalizeResponsesWebsocketEnabled(&group)
 	if group.MatchRegex != "" {
 		_, err := regexp2.Compile(group.MatchRegex, regexp2.ECMAScript)
 		if err != nil {
@@ -136,6 +160,12 @@ func updateGroup(c *gin.Context) {
 			return
 		}
 	}
+	currentGroup, err := op.GroupGet(req.ID, c.Request.Context())
+	if err != nil {
+		resp.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	normalizeResponsesWebsocketEnabledUpdate(&req, *currentGroup)
 	group, err := op.GroupUpdate(&req, c.Request.Context())
 	if err != nil {
 		resp.Error(c, http.StatusInternalServerError, err.Error())

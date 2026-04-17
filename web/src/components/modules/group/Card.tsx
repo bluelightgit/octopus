@@ -58,6 +58,7 @@ function EditDialogContent({ group, displayMembers, isSubmitting, onSubmit }: Ed
                         preferred_protocol_family: group.preferred_protocol_family ?? GroupProtocolFamily.Auto,
                         protocol_routing_mode: group.protocol_routing_mode ?? GroupProtocolRoutingMode.PreferSameProtocol,
                         route_affinity_mode: group.route_affinity_mode ?? group.responses_stateful_routing ?? GroupRouteAffinityMode.Auto,
+                        responses_websocket_enabled: group.responses_websocket_enabled ?? false,
                         members: displayMembers,
                     }}
                     submitText={t('detail.actions.save')}
@@ -226,6 +227,7 @@ export function GroupCard({ group }: { group: Group }) {
         const nextPreferredProtocolFamily = values.preferred_protocol_family ?? GroupProtocolFamily.Auto;
         const nextProtocolRoutingMode = values.protocol_routing_mode ?? GroupProtocolRoutingMode.PreferSameProtocol;
         const nextRouteAffinityMode = values.route_affinity_mode ?? GroupRouteAffinityMode.Auto;
+        const nextResponsesWebsocketEnabled = values.responses_websocket_enabled ?? false;
 
         if (nextName && nextName !== group.name) payload.name = nextName;
         if (values.mode !== group.mode) payload.mode = values.mode;
@@ -235,6 +237,7 @@ export function GroupCard({ group }: { group: Group }) {
         if (nextPreferredProtocolFamily !== (group.preferred_protocol_family ?? GroupProtocolFamily.Auto)) payload.preferred_protocol_family = nextPreferredProtocolFamily;
         if (nextProtocolRoutingMode !== (group.protocol_routing_mode ?? GroupProtocolRoutingMode.PreferSameProtocol)) payload.protocol_routing_mode = nextProtocolRoutingMode;
         if (nextRouteAffinityMode !== (group.route_affinity_mode ?? group.responses_stateful_routing ?? GroupRouteAffinityMode.Auto)) payload.route_affinity_mode = nextRouteAffinityMode;
+        if (nextResponsesWebsocketEnabled !== (group.responses_websocket_enabled ?? false)) payload.responses_websocket_enabled = nextResponsesWebsocketEnabled;
         if (items_to_add.length) payload.items_to_add = items_to_add;
         if (items_to_update.length) payload.items_to_update = items_to_update;
         if (items_to_delete.length) payload.items_to_delete = items_to_delete;
@@ -251,7 +254,7 @@ export function GroupCard({ group }: { group: Group }) {
             },
             onError,
         });
-    }, [group.first_token_time_out, group.preferred_protocol_family, group.protocol_routing_mode, group.route_affinity_mode, group.responses_stateful_routing, group.session_keep_time, group.id, group.items, group.match_regex, group.mode, group.name, onSuccess, onError, updateGroup]);
+    }, [group.first_token_time_out, group.preferred_protocol_family, group.protocol_routing_mode, group.route_affinity_mode, group.responses_stateful_routing, group.responses_websocket_enabled, group.session_keep_time, group.id, group.items, group.match_regex, group.mode, group.name, onSuccess, onError, updateGroup]);
 
     return (
         <article className="flex flex-col rounded-3xl border border-border bg-card text-card-foreground p-4 custom-shadow">

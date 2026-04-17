@@ -7,6 +7,7 @@ import * as AccordionPrimitive from '@radix-ui/react-accordion';
 import { useModelChannelList, type LLMChannel } from '@/api/endpoints/model';
 import { Button } from '@/components/ui/button';
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
+import { Switch } from '@/components/ui/switch';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Accordion, AccordionContent, AccordionItem } from '@/components/ui/accordion';
@@ -29,6 +30,7 @@ export type GroupEditorValues = {
     preferred_protocol_family: GroupProtocolFamily;
     protocol_routing_mode: GroupProtocolRoutingMode;
     route_affinity_mode: GroupRouteAffinityMode;
+    responses_websocket_enabled: boolean;
     members: SelectedMember[];
 };
 
@@ -289,6 +291,7 @@ export function GroupEditor({
     const [preferredProtocolFamily, setPreferredProtocolFamily] = useState<GroupProtocolFamily>(initial?.preferred_protocol_family ?? GroupProtocolFamily.Auto);
     const [protocolRoutingMode, setProtocolRoutingMode] = useState<GroupProtocolRoutingMode>(initial?.protocol_routing_mode ?? GroupProtocolRoutingMode.PreferSameProtocol);
     const [routeAffinityMode, setRouteAffinityMode] = useState<GroupRouteAffinityMode>(initial?.route_affinity_mode ?? GroupRouteAffinityMode.Auto);
+    const [responsesWebsocketEnabled, setResponsesWebsocketEnabled] = useState<boolean>(initial?.responses_websocket_enabled ?? false);
     const [selectedMembers, setSelectedMembers] = useState<SelectedMember[]>(initial?.members ?? []);
     const [removingIds, setRemovingIds] = useState<Set<string>>(new Set());
 
@@ -375,6 +378,7 @@ export function GroupEditor({
             preferred_protocol_family: preferredProtocolFamily,
             protocol_routing_mode: protocolRoutingMode,
             route_affinity_mode: routeAffinityMode,
+            responses_websocket_enabled: preferredProtocolFamily === GroupProtocolFamily.OpenAIResponses ? responsesWebsocketEnabled : false,
             members: selectedMembers,
         });
     };
@@ -519,6 +523,23 @@ export function GroupEditor({
                                 </SelectContent>
                             </Select>
                         </Field>
+
+                        {preferredProtocolFamily === GroupProtocolFamily.OpenAIResponses && (
+                            <Field>
+                                <div className="flex min-h-10 items-center justify-between gap-3 rounded-xl border border-border/60 bg-background px-3 py-2">
+                                    <LabelWithHint
+                                        htmlFor="group-responses-websocket-enabled"
+                                        label={t('form.responsesWebsocketEnabled')}
+                                        hint={t('form.responsesWebsocketEnabledHint')}
+                                    />
+                                    <Switch
+                                        id="group-responses-websocket-enabled"
+                                        checked={responsesWebsocketEnabled}
+                                        onCheckedChange={(checked) => setResponsesWebsocketEnabled(checked === true)}
+                                    />
+                                </div>
+                            </Field>
+                        )}
                     </div>
 
                     {/* Mode */}
