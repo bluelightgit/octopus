@@ -3,11 +3,14 @@ package relay
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bestruirui/octopus/internal/helper"
@@ -20,7 +23,10 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const websocketCloseReasonLimit = 120
+const (
+	websocketCloseReasonLimit = 120
+	websocketWriteTimeout     = 5 * time.Second
+)
 
 type responsesWebsocketSession struct {
 	channel         *dbmodel.Channel
@@ -30,6 +36,28 @@ type responsesWebsocketSession struct {
 	upstreamModel   string
 	iter            *balancer.Iterator
 	span            *balancer.AttemptSpan
+}
+
+type responsesWebsocketRelayIOError struct {
+	Op  string
+	Err error
+}
+
+func (e *responsesWebsocketRelayIOError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Op == "" {
+		return e.Err.Error()
+	}
+	return fmt.Sprintf("%s websocket frame: %v", e.Op, e.Err)
+}
+
+func (e *responsesWebsocketRelayIOError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
 }
 
 func HandleResponsesWebsocket(c *gin.Context) {
@@ -223,6 +251,10 @@ func rewriteResponsesWebsocketCreatePayload(payload []byte, upstreamModel string
 }
 
 func establishResponsesWebsocketSession(ctx context.Context, c *gin.Context, group dbmodel.Group, requestModel string, metrics *RelayMetrics) (*responsesWebsocketSession, error) {
+	return establishResponsesWebsocketSessionWithDialer(ctx, c, group, requestModel, metrics, helper.ChannelWebsocketDialer)
+}
+
+func establishResponsesWebsocketSessionWithDialer(ctx context.Context, c *gin.Context, group dbmodel.Group, requestModel string, metrics *RelayMetrics, dialerFactory func(*dbmodel.Channel) (*websocket.Dialer, error)) (*responsesWebsocketSession, error) {
 	iter := balancer.NewIteratorWithOptions(group, c.GetInt("api_key_id"), requestModel, balancer.IteratorOptions{DisableSessionSticky: true})
 	var lastErr error
 	var sawResponsesChannel bool
@@ -260,7 +292,7 @@ func establishResponsesWebsocketSession(ctx context.Context, c *gin.Context, gro
 			continue
 		}
 
-		dialer, err := helper.ChannelWebsocketDialer(channel)
+		dialer, err := dialerFactory(channel)
 		if err != nil {
 			iter.Skip(channel.ID, usedKey.ID, channel.Name, err.Error())
 			lastErr = err
@@ -327,12 +359,28 @@ func proxyResponsesWebsocket(clientConn, upstreamConn *websocket.Conn, metrics *
 		return fmt.Errorf("websocket connection is nil")
 	}
 
-	resultCh := make(chan error, 2)
+	applyResponsesWebsocketReadDeadline(clientConn)
+	applyResponsesWebsocketReadDeadline(upstreamConn)
+	clientConn.SetPongHandler(func(string) error {
+		applyResponsesWebsocketReadDeadline(clientConn)
+		return nil
+	})
+	upstreamConn.SetPongHandler(func(string) error {
+		applyResponsesWebsocketReadDeadline(upstreamConn)
+		return nil
+	})
+
+	type websocketRelayResult struct {
+		source string
+		err    error
+	}
+
+	resultCh := make(chan websocketRelayResult, 2)
 	go func() {
-		resultCh <- relayWebsocketMessages(clientConn, upstreamConn, nil)
+		resultCh <- websocketRelayResult{source: "client_to_upstream", err: relayWebsocketMessages(clientConn, upstreamConn, nil)}
 	}()
 	go func() {
-		resultCh <- relayWebsocketMessages(upstreamConn, clientConn, func(messageType int, payload []byte) {
+		resultCh <- websocketRelayResult{source: "upstream_to_client", err: relayWebsocketMessages(upstreamConn, clientConn, func(messageType int, payload []byte) {
 			now := time.Now()
 			if metrics != nil {
 				metrics.RecordUpstreamEvent(now)
@@ -341,20 +389,42 @@ func proxyResponsesWebsocket(clientConn, upstreamConn *websocket.Conn, metrics *
 					metrics.SetFirstTokenTime(now)
 				}
 				if messageType == websocket.TextMessage {
-					metrics.RecordUpstreamEventType(detectResponsesWebsocketEventType(payload))
+					eventType := detectResponsesWebsocketEventType(payload)
+					metrics.RecordUpstreamEventType(eventType)
+					if isResponsesWebsocketTerminalEvent(eventType) {
+						metrics.MarkTerminalSeen()
+					}
 				}
 			}
-		})
+		})}
 	}()
 
-	firstErr := <-resultCh
+	var stopPing chan struct{}
+	var pingWG sync.WaitGroup
+	if relayStreamIdleTimeout > 0 {
+		stopPing = make(chan struct{})
+		pingWG.Add(2)
+		go func() {
+			defer pingWG.Done()
+			_ = sendResponsesWebsocketPingLoop(clientConn, stopPing)
+		}()
+		go func() {
+			defer pingWG.Done()
+			_ = sendResponsesWebsocketPingLoop(upstreamConn, stopPing)
+		}()
+	}
+
+	firstResult := <-resultCh
+	if stopPing != nil {
+		close(stopPing)
+	}
 	_ = clientConn.Close()
 	_ = upstreamConn.Close()
 	<-resultCh
-	if isExpectedWebsocketClose(firstErr) {
-		return nil
+	if stopPing != nil {
+		pingWG.Wait()
 	}
-	return firstErr
+	return evaluateResponsesWebsocketProxyResult(firstResult.source, firstResult.err, metrics)
 }
 
 func relayWebsocketMessages(src, dst *websocket.Conn, beforeWrite func(messageType int, payload []byte)) error {
@@ -364,14 +434,146 @@ func relayWebsocketMessages(src, dst *websocket.Conn, beforeWrite func(messageTy
 			if closeErr, ok := err.(*websocket.CloseError); ok {
 				writeWebsocketClose(dst, closeErr.Code, closeErr.Text)
 			}
-			return err
+			return &responsesWebsocketRelayIOError{Op: "read", Err: normalizeResponsesWebsocketReadError(err)}
 		}
+		applyResponsesWebsocketReadDeadline(src)
 		if beforeWrite != nil {
 			beforeWrite(messageType, payload)
 		}
-		if err := dst.WriteMessage(messageType, payload); err != nil {
-			return err
+		if err := writeResponsesWebsocketMessage(dst, messageType, payload); err != nil {
+			return &responsesWebsocketRelayIOError{Op: "write", Err: err}
 		}
+	}
+}
+
+func writeResponsesWebsocketMessage(conn *websocket.Conn, messageType int, payload []byte) error {
+	if conn == nil {
+		return fmt.Errorf("websocket connection is nil")
+	}
+	if err := conn.SetWriteDeadline(time.Now().Add(websocketWriteTimeout)); err != nil {
+		return err
+	}
+	if err := conn.WriteMessage(messageType, payload); err != nil {
+		return err
+	}
+	return conn.SetWriteDeadline(time.Time{})
+}
+
+func sendResponsesWebsocketPingLoop(conn *websocket.Conn, stop <-chan struct{}) error {
+	if conn == nil || relayStreamIdleTimeout <= 0 {
+		return nil
+	}
+	interval := relayStreamIdleTimeout / 2
+	if interval <= 0 {
+		interval = time.Second
+	}
+	if interval > 30*time.Second {
+		interval = 30 * time.Second
+	}
+	if interval < time.Second {
+		interval = time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return nil
+		case <-ticker.C:
+			deadline := time.Now().Add(websocketWriteTimeout)
+			if err := conn.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func applyResponsesWebsocketReadDeadline(conn *websocket.Conn) {
+	if conn == nil || relayStreamIdleTimeout <= 0 {
+		return
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(relayStreamIdleTimeout))
+}
+
+func normalizeResponsesWebsocketReadError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return fmt.Errorf("websocket idle timeout after %s", formatRelayTimeout(relayStreamIdleTimeout))
+	}
+	return err
+}
+
+func isExpectedWebsocketIdleTimeout(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "websocket idle timeout")
+}
+
+func evaluateResponsesWebsocketProxyResult(source string, err error, metrics *RelayMetrics) error {
+	if err == nil {
+		return nil
+	}
+
+	var ioErr *responsesWebsocketRelayIOError
+	if errors.As(err, &ioErr) {
+		switch {
+		case source == "client_to_upstream" && ioErr.Op == "read":
+			if isResponsesWebsocketClientDisconnect(ioErr.Err) {
+				return nil
+			}
+		case source == "upstream_to_client" && ioErr.Op == "write":
+			if isResponsesWebsocketClientDisconnect(ioErr.Err) {
+				return nil
+			}
+		case source == "upstream_to_client" && ioErr.Op == "read":
+			if responsesWebsocketSawTerminal(metrics) && (isExpectedWebsocketClose(ioErr.Err) || isUnexpectedResponsesWebsocketClose(ioErr.Err)) {
+				return nil
+			}
+			if !responsesWebsocketSawTerminal(metrics) && isUnexpectedResponsesWebsocketClose(ioErr.Err) {
+				return fmt.Errorf("upstream websocket closed before terminal event")
+			}
+		}
+	}
+
+	return err
+}
+
+func responsesWebsocketSawTerminal(metrics *RelayMetrics) bool {
+	return metrics != nil && metrics.TerminalSeen
+}
+
+func isUnexpectedResponsesWebsocketClose(err error) bool {
+	if err == nil {
+		return false
+	}
+	if isExpectedWebsocketIdleTimeout(err) {
+		return false
+	}
+	if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+		return true
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "unexpected eof") || strings.Contains(msg, "abnormal closure")
+}
+
+func isResponsesWebsocketClientDisconnect(err error) bool {
+	if err == nil {
+		return false
+	}
+	if isExpectedWebsocketIdleTimeout(err) || isUnexpectedResponsesWebsocketClose(err) || isExpectedWebsocketClose(err) {
+		return true
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "broken pipe") || strings.Contains(msg, "connection reset") || strings.Contains(msg, "forcibly closed")
+}
+
+func isResponsesWebsocketTerminalEvent(eventType string) bool {
+	switch strings.TrimSpace(eventType) {
+	case "response.completed", "response.failed", "response.incomplete":
+		return true
+	default:
+		return false
 	}
 }
 

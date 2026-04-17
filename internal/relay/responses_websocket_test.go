@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -324,6 +325,197 @@ func TestHandleResponsesWebsocket_RejectsCrossProtocolOnlyGroup(t *testing.T) {
 	logItem := lastRelayLog(t, ctx)
 	if !strings.Contains(logItem.Error, "same-protocol") {
 		t.Fatalf("expected relay log error about same-protocol channel, got %q", logItem.Error)
+	}
+}
+
+func TestHandleResponsesWebsocket_ReportsUnexpectedUpstreamCloseWithoutTerminal(t *testing.T) {
+	ctx := setupRelayTestEnv(t)
+	apiKey := createRelayTestAPIKey(t, ctx)
+
+	requestModel := "responses-ws-unexpected-close"
+	upstreamModel := "responses-ws-upstream"
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+		_, _, _ = conn.ReadMessage()
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.created","response":{"id":"resp_1","object":"response","model":"`+upstreamModel+`","status":"in_progress","output":[]}}`))
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.output_text.delta","delta":"partial"}`))
+		_ = conn.Close()
+	}))
+	defer upstream.Close()
+
+	channel := createRelayTestChannel(t, ctx, "responses-ws-channel", outbound.OutboundTypeOpenAIResponse, upstream.URL+"/v1")
+	group := createResponsesWebsocketGroup(t, ctx, requestModel, true)
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{GroupID: group.ID, ChannelID: channel.ID, ModelName: upstreamModel, Priority: 1, Weight: 1}, ctx); err != nil {
+		t.Fatalf("GroupItemAdd failed: %v", err)
+	}
+
+	octopus := newResponsesWebsocketTestServer(apiKey.ID, requestModel)
+	defer octopus.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial(websocketURLFromHTTP(octopus.URL)+"/v1/responses", nil)
+	if err != nil {
+		t.Fatalf("dial octopus websocket failed: %v", err)
+	}
+	defer conn.Close()
+
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"`+requestModel+`","input":"hi"}`)); err != nil {
+		t.Fatalf("write first frame failed: %v", err)
+	}
+
+	for {
+		_, _, err = conn.ReadMessage()
+		if err != nil {
+			break
+		}
+	}
+
+	logItem := waitForLatestRelayLog(t, ctx)
+	if !strings.Contains(logItem.Error, "before terminal event") {
+		t.Fatalf("expected relay log error about upstream close before terminal, got %q", logItem.Error)
+	}
+	if logItem.TerminalSeen == nil || *logItem.TerminalSeen {
+		t.Fatalf("expected terminal seen to be false, got %v", logItem.TerminalSeen)
+	}
+}
+
+func TestNormalizeResponsesWebsocketReadError_ConvertsTimeout(t *testing.T) {
+	prevIdle := relayStreamIdleTimeout
+	relayStreamIdleTimeout = 40 * time.Millisecond
+	t.Cleanup(func() { relayStreamIdleTimeout = prevIdle })
+
+	idleServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+		serverConn, upgradeErr := upgrader.Upgrade(w, r, nil)
+		if upgradeErr != nil {
+			t.Errorf("upgrade failed: %v", upgradeErr)
+			return
+		}
+		defer serverConn.Close()
+		time.Sleep(200 * time.Millisecond)
+	}))
+	defer idleServer.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial(websocketURLFromHTTP(idleServer.URL), nil)
+	if err != nil {
+		t.Fatalf("dial websocket failed: %v", err)
+	}
+	defer conn.Close()
+
+	applyResponsesWebsocketReadDeadline(conn)
+	_, _, err = conn.ReadMessage()
+	if err == nil {
+		t.Fatal("expected read timeout")
+	}
+	normalized := normalizeResponsesWebsocketReadError(err)
+	if normalized == nil || !strings.Contains(normalized.Error(), "idle timeout") {
+		t.Fatalf("expected normalized idle timeout, got %v", normalized)
+	}
+}
+
+func TestProxyResponsesWebsocket_ClientDisconnectAfterTerminalReturnsNil(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	serverConnCh := make(chan *websocket.Conn, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade failed: %v", err)
+			return
+		}
+		serverConnCh <- conn
+	}))
+	defer server.Close()
+
+	clientA, _, err := websocket.DefaultDialer.Dial(websocketURLFromHTTP(server.URL), nil)
+	if err != nil {
+		t.Fatalf("dial clientA failed: %v", err)
+	}
+	defer clientA.Close()
+	clientB, _, err := websocket.DefaultDialer.Dial(websocketURLFromHTTP(server.URL), nil)
+	if err != nil {
+		t.Fatalf("dial clientB failed: %v", err)
+	}
+	defer clientB.Close()
+
+	serverA := <-serverConnCh
+	defer serverA.Close()
+	serverB := <-serverConnCh
+	defer serverB.Close()
+
+	metrics := NewRelayMetrics(0, "terminal-disconnect", nil)
+	go func() {
+		_ = clientB.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed","output":[]}}`))
+		_ = clientB.Close()
+	}()
+
+	err = proxyResponsesWebsocket(serverA, serverB, metrics)
+	if err != nil {
+		t.Fatalf("expected client disconnect after terminal to be ignored, got %v", err)
+	}
+	if !metrics.TerminalSeen {
+		t.Fatal("expected terminal event to be recorded")
+	}
+}
+
+func TestEstablishResponsesWebsocketSession_DialerErrorFallsBack(t *testing.T) {
+	ctx := setupRelayTestEnv(t)
+	requestModel := "responses-ws-dialer-fallback"
+	group := createResponsesWebsocketGroup(t, ctx, requestModel, true)
+
+	firstChannel := createRelayTestChannel(t, ctx, "responses-ws-first", outbound.OutboundTypeOpenAIResponse, "http://example.invalid/v1")
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer upstream.Close()
+	secondChannel := createRelayTestChannel(t, ctx, "responses-ws-second", outbound.OutboundTypeOpenAIResponse, upstream.URL+"/v1")
+
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{GroupID: group.ID, ChannelID: firstChannel.ID, ModelName: "first-upstream", Priority: 1, Weight: 1}, ctx); err != nil {
+		t.Fatalf("add first channel failed: %v", err)
+	}
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{GroupID: group.ID, ChannelID: secondChannel.ID, ModelName: "second-upstream", Priority: 2, Weight: 1}, ctx); err != nil {
+		t.Fatalf("add second channel failed: %v", err)
+	}
+
+	loadedGroup, err := op.GroupGetEnabledMap(requestModel, ctx)
+	if err != nil {
+		t.Fatalf("GroupGetEnabledMap failed: %v", err)
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	c.Set("api_key_id", 1)
+	metrics := NewRelayMetrics(1, requestModel, nil)
+
+	var dialerCalls int32
+	session, err := establishResponsesWebsocketSessionWithDialer(ctx, c, loadedGroup, requestModel, metrics, func(channel *dbmodel.Channel) (*websocket.Dialer, error) {
+		if channel.Name == "responses-ws-first" {
+			atomic.AddInt32(&dialerCalls, 1)
+			return nil, fmt.Errorf("dialer init failed")
+		}
+		return websocket.DefaultDialer, nil
+	})
+	if err != nil {
+		t.Fatalf("expected fallback session, got error %v", err)
+	}
+	defer session.upstreamConn.Close()
+	if session.channel == nil || session.channel.Name != "responses-ws-second" {
+		t.Fatalf("expected second channel to be selected, got %#v", session.channel)
+	}
+	if atomic.LoadInt32(&dialerCalls) != 1 {
+		t.Fatalf("expected first dialer to be attempted once, got %d", atomic.LoadInt32(&dialerCalls))
 	}
 }
 
