@@ -27,6 +27,10 @@ func init() {
 				Handle(response),
 		).
 		AddRoute(
+			router.NewRoute("/responses", http.MethodGet).
+				Handle(responseWebsocket),
+		).
+		AddRoute(
 			router.NewRoute("/messages", http.MethodPost).
 				Handle(message),
 		).
@@ -43,12 +47,19 @@ func chat(c *gin.Context) {
 func completions(c *gin.Context) {
 	relay.Handler(inbound.InboundTypeOpenAICompletions, c)
 }
+
 func response(c *gin.Context) {
 	relay.Handler(inbound.InboundTypeOpenAIResponse, c)
 }
+
+func responseWebsocket(c *gin.Context) {
+	relay.HandleResponsesWebsocket(c)
+}
+
 func message(c *gin.Context) {
 	relay.Handler(inbound.InboundTypeAnthropic, c)
 }
+
 func embedding(c *gin.Context) {
 	relay.Handler(inbound.InboundTypeOpenAIEmbedding, c)
 }
