@@ -76,6 +76,9 @@ func GroupCreate(group *model.Group, ctx context.Context) error {
 	if group.ProtocolRoutingMode == "" {
 		group.ProtocolRoutingMode = model.GroupProtocolRoutingModePreferSameProtocol
 	}
+	if group.GetPreferredProtocolFamily() != model.GroupProtocolFamilyOpenAIResponses {
+		group.ResponsesWebsocketEnabled = false
+	}
 	group.RouteAffinityMode = model.ResolveGroupRouteAffinityMode(group.RouteAffinityMode, group.ResponsesStatefulRouting)
 	syncGroupRouteAffinityFields(group)
 	if err := db.GetDB().WithContext(ctx).Create(group).Error; err != nil {
@@ -134,6 +137,18 @@ func GroupUpdate(req *model.GroupUpdateRequest, ctx context.Context) (*model.Gro
 	if req.RouteAffinityMode != nil || req.ResponsesStatefulRouting != nil {
 		selectFields = append(selectFields, "responses_stateful_routing")
 		updates.RouteAffinityMode = model.ResolveGroupRouteAffinityMode(ptrRouteAffinityModeValue(req.RouteAffinityMode), ptrLegacyRouteAffinityModeValue(req.ResponsesStatefulRouting))
+	}
+	if req.ResponsesWebsocketEnabled != nil {
+		selectFields = append(selectFields, "responses_websocket_enabled")
+		updates.ResponsesWebsocketEnabled = *req.ResponsesWebsocketEnabled
+	}
+	nextPreferredProtocolFamily := oldGroup.GetPreferredProtocolFamily()
+	if req.PreferredProtocolFamily != nil {
+		nextPreferredProtocolFamily = *req.PreferredProtocolFamily
+	}
+	if nextPreferredProtocolFamily != model.GroupProtocolFamilyOpenAIResponses && req.ResponsesWebsocketEnabled == nil {
+		selectFields = append(selectFields, "responses_websocket_enabled")
+		updates.ResponsesWebsocketEnabled = false
 	}
 
 	if len(selectFields) > 0 {

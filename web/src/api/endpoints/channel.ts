@@ -64,6 +64,7 @@ export type Channel = {
     custom_header: CustomHeader[];
     param_override?: string | null;
     channel_proxy?: string | null;
+    responses_websocket_max_lifetime_sec: number;
     match_regex?: string | null;
     stats: StatsChannel;
 };
@@ -92,6 +93,7 @@ export type CreateChannelRequest = {
     custom_header?: CustomHeader[];
     channel_proxy?: string | null;
     param_override?: string | null;
+    responses_websocket_max_lifetime_sec?: number;
     match_regex?: string | null;
 };
 
@@ -112,6 +114,7 @@ export type UpdateChannelRequest = {
     custom_header?: CustomHeader[];
     channel_proxy?: string | null;
     param_override?: string | null;
+    responses_websocket_max_lifetime_sec?: number;
     match_regex?: string | null;
     // keys diff
     keys_to_add?: Array<Pick<ChannelKey, 'enabled' | 'channel_key' | 'remark'>>;

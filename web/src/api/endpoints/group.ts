@@ -61,6 +61,7 @@ export interface Group {
     protocol_routing_mode?: GroupProtocolRoutingMode;
     route_affinity_mode?: GroupRouteAffinityMode;
     responses_stateful_routing?: GroupResponsesStatefulRoutingMode;
+    responses_websocket_enabled?: boolean;
     items?: GroupItem[];
 }
 
@@ -97,6 +98,7 @@ export interface GroupUpdateRequest {
     protocol_routing_mode?: GroupProtocolRoutingMode; // 仅在协议路由模式变更时发送
     route_affinity_mode?: GroupRouteAffinityMode; // 仅在路由亲和策略变更时发送
     responses_stateful_routing?: GroupResponsesStatefulRoutingMode; // 兼容旧字段
+    responses_websocket_enabled?: boolean; // 仅在 Responses WebSocket 开关变更时发送
     items_to_add?: GroupItemAddRequest[];    // 新增的 items
     items_to_update?: GroupItemUpdateRequest[]; // 更新的 items (priority 变更)
     items_to_delete?: number[];              // 删除的 item IDs
@@ -236,4 +238,3 @@ export function useDeleteGroup() {
 //         },
 //     });
 // }
-

@@ -11,9 +11,10 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { toast } from '@/components/common/Toast';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/animate-ui/components/animate/tooltip';
 import { useTranslations } from 'next-intl';
 import { useEffect, useRef, useState } from 'react';
-import { RefreshCw, X, Plus } from 'lucide-react';
+import { RefreshCw, X, Plus, CircleHelp } from 'lucide-react';
 
 export interface ChannelKeyFormItem {
     id?: number;
@@ -39,6 +40,7 @@ export interface ChannelFormData {
     proxy: boolean;
     auto_sync: boolean;
     auto_group: AutoGroupType;
+    responses_websocket_max_lifetime_sec: number;
     match_regex: string;
 }
 
@@ -103,6 +105,7 @@ export function ChannelForm({
 
     const effectiveKey =
         formData.keys.find((k) => k.enabled && k.channel_key.trim())?.channel_key.trim() || '';
+    const isResponsesChannel = formData.type === ChannelType.OpenAIResponse;
 
     const updateModels = (nextAuto: string[], nextCustom: string[]) => {
         const model = nextAuto.join(',');
@@ -574,6 +577,43 @@ export function ChannelForm({
                                 className="min-h-28 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                             />
                         </div>
+
+                        {isResponsesChannel && (
+                            <div className="space-y-2">
+                                <div className="flex items-center gap-2">
+                                    <label htmlFor={`${idPrefix}-responses-websocket-max-lifetime`} className="text-sm font-medium text-card-foreground">
+                                        {t('responsesWebsocketMaxLifetime')}
+                                    </label>
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <button
+                                                type="button"
+                                                className="inline-flex size-4 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground"
+                                                aria-label={t('responsesWebsocketMaxLifetimeHint')}
+                                            >
+                                                <CircleHelp className="size-4" />
+                                            </button>
+                                        </TooltipTrigger>
+                                        <TooltipContent side="top" className="max-w-xs text-sm">
+                                            {t('responsesWebsocketMaxLifetimeHint')}
+                                        </TooltipContent>
+                                    </Tooltip>
+                                </div>
+                                <Input
+                                    id={`${idPrefix}-responses-websocket-max-lifetime`}
+                                    type="number"
+                                    min={1}
+                                    step={1}
+                                    value={formData.responses_websocket_max_lifetime_sec}
+                                    onChange={(e) => onFormDataChange({
+                                        ...formData,
+                                        responses_websocket_max_lifetime_sec: Math.max(1, Number(e.target.value || 0) || 1),
+                                    })}
+                                    placeholder="3600"
+                                    className="rounded-xl"
+                                />
+                            </div>
+                        )}
                     </AccordionContent>
                 </AccordionItem>
             </Accordion>
