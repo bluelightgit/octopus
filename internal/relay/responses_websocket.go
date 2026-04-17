@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bestruirui/octopus/internal/helper"
@@ -29,13 +30,16 @@ const (
 )
 
 type responsesWebsocketSession struct {
-	channel         *dbmodel.Channel
-	usedKey         dbmodel.ChannelKey
-	selectedBaseURL string
-	upstreamConn    *websocket.Conn
-	upstreamModel   string
-	iter            *balancer.Iterator
-	span            *balancer.AttemptSpan
+	groupID           int
+	channel           *dbmodel.Channel
+	usedKey           dbmodel.ChannelKey
+	selectedBaseURL   string
+	upstreamConn      *websocket.Conn
+	upstreamModel     string
+	maxLifetime       time.Duration
+	responsesStateful *responsesStatefulRequestContext
+	iter              *balancer.Iterator
+	span              *balancer.AttemptSpan
 }
 
 type responsesWebsocketRelayIOError struct {
@@ -117,7 +121,12 @@ func HandleResponsesWebsocket(c *gin.Context) {
 		return
 	}
 
-	session, err := establishResponsesWebsocketSession(c.Request.Context(), c, group, requestModel, metrics)
+	responsesStateful := buildResponsesStatefulRequestContext(group, apiKeyID, requestModel, internalRequest)
+	if responsesStateful != nil {
+		metrics.RecordExecutionTrace(fmt.Sprintf("ws_stateful_route: enabled=%t pinned=%t protection=%s", responsesStateful.Enabled(), responsesStateful.HasPinnedRoute(), responsesStateful.ProtectionReason()))
+	}
+
+	session, err := establishResponsesWebsocketSession(c.Request.Context(), c, group, requestModel, metrics, responsesStateful)
 	if err != nil {
 		metrics.RecordExecutionTrace(fmt.Sprintf("ws_connect_failed: %s", err.Error()))
 		attempts := []dbmodel.ChannelAttempt(nil)
@@ -131,7 +140,7 @@ func HandleResponsesWebsocket(c *gin.Context) {
 	defer session.upstreamConn.Close()
 	metrics.ActualModel = session.upstreamModel
 
-	metrics.RecordExecutionTrace(fmt.Sprintf("ws_connected: channel=%s upstream_model=%s base_url=%s key_id=%d", session.channel.Name, session.upstreamModel, normalizeAffinityBaseURL(session.selectedBaseURL), session.usedKey.ID))
+	metrics.RecordExecutionTrace(fmt.Sprintf("ws_connected: channel=%s upstream_model=%s base_url=%s key_id=%d lifetime=%s", session.channel.Name, session.upstreamModel, normalizeAffinityBaseURL(session.selectedBaseURL), session.usedKey.ID, formatRelayTimeout(session.maxLifetime)))
 
 	forwardPayload := rewriteResponsesWebsocketCreatePayload(firstPayload, session.upstreamModel)
 	if err := session.upstreamConn.WriteMessage(firstMessageType, forwardPayload); err != nil {
@@ -148,7 +157,7 @@ func HandleResponsesWebsocket(c *gin.Context) {
 	}
 	metrics.RecordExecutionTrace("ws_forwarded_first_frame: type=response.create")
 
-	err = proxyResponsesWebsocket(clientConn, session.upstreamConn, metrics)
+	err = proxyResponsesWebsocket(clientConn, session, metrics)
 	if err != nil {
 		session.span.End(dbmodel.AttemptFailed, http.StatusSwitchingProtocols, err.Error())
 		balancer.RecordFailure(session.channel.ID, session.usedKey.ID, requestModel)
@@ -167,6 +176,17 @@ func HandleResponsesWebsocket(c *gin.Context) {
 	session.usedKey.StatusCode = http.StatusSwitchingProtocols
 	session.usedKey.LastUseTimeStamp = time.Now().Unix()
 	op.ChannelKeyUpdate(session.usedKey)
+	if session.responsesStateful != nil {
+		lookupKeys := session.responsesStateful.AllLookupKeys()
+		if len(lookupKeys) > 0 {
+			rememberResponsesAffinityRoute(apiKeyID, lookupKeys, affinityRoute{
+				ChannelID:    session.channel.ID,
+				ChannelKeyID: session.usedKey.ID,
+				BaseURL:      session.selectedBaseURL,
+			})
+			metrics.RecordExecutionTrace(fmt.Sprintf("ws_stateful_bound: lookup_keys=%d channel=%d key_id=%d base_url=%s", len(lookupKeys), session.channel.ID, session.usedKey.ID, normalizeAffinityBaseURL(session.selectedBaseURL)))
+		}
+	}
 	metrics.RecordExecutionTrace("ws_proxy_complete: graceful_close")
 	metrics.Save(c.Request.Context(), true, nil, session.iter.Attempts())
 }
@@ -250,17 +270,25 @@ func rewriteResponsesWebsocketCreatePayload(payload []byte, upstreamModel string
 	return body
 }
 
-func establishResponsesWebsocketSession(ctx context.Context, c *gin.Context, group dbmodel.Group, requestModel string, metrics *RelayMetrics) (*responsesWebsocketSession, error) {
-	return establishResponsesWebsocketSessionWithDialer(ctx, c, group, requestModel, metrics, helper.ChannelWebsocketDialer)
+func establishResponsesWebsocketSession(ctx context.Context, c *gin.Context, group dbmodel.Group, requestModel string, metrics *RelayMetrics, responsesStateful *responsesStatefulRequestContext) (*responsesWebsocketSession, error) {
+	return establishResponsesWebsocketSessionWithDialer(ctx, c, group, requestModel, metrics, responsesStateful, helper.ChannelWebsocketDialer)
 }
 
-func establishResponsesWebsocketSessionWithDialer(ctx context.Context, c *gin.Context, group dbmodel.Group, requestModel string, metrics *RelayMetrics, dialerFactory func(*dbmodel.Channel) (*websocket.Dialer, error)) (*responsesWebsocketSession, error) {
+func establishResponsesWebsocketSessionWithDialer(ctx context.Context, c *gin.Context, group dbmodel.Group, requestModel string, metrics *RelayMetrics, responsesStateful *responsesStatefulRequestContext, dialerFactory func(*dbmodel.Channel) (*websocket.Dialer, error)) (*responsesWebsocketSession, error) {
 	iter := balancer.NewIteratorWithOptions(group, c.GetInt("api_key_id"), requestModel, balancer.IteratorOptions{DisableSessionSticky: true})
 	var lastErr error
 	var sawResponsesChannel bool
+	var matchedPinnedRoute bool
 
 	for iter.Next() {
 		item := iter.Item()
+		if responsesStateful != nil && responsesStateful.HasPinnedRoute() && item.ChannelID == responsesStateful.PinnedRoute.ChannelID {
+			matchedPinnedRoute = true
+		}
+		if responsesStateful != nil && responsesStateful.HasPinnedRoute() && item.ChannelID != responsesStateful.PinnedRoute.ChannelID {
+			iter.Skip(item.ChannelID, 0, fmt.Sprintf("channel_%d", item.ChannelID), fmt.Sprintf("responses stateful route pinned to channel %d", responsesStateful.PinnedRoute.ChannelID))
+			continue
+		}
 		channel, err := op.ChannelGet(item.ChannelID, c.Request.Context())
 		if err != nil {
 			iter.Skip(item.ChannelID, 0, fmt.Sprintf("channel_%d", item.ChannelID), fmt.Sprintf("channel not found: %v", err))
@@ -278,17 +306,50 @@ func establishResponsesWebsocketSessionWithDialer(ctx context.Context, c *gin.Co
 		sawResponsesChannel = true
 
 		selectedBaseURL := channel.GetBaseUrl()
+		if responsesStateful != nil && responsesStateful.HasPinnedRoute() {
+			pinnedBaseURL, ok := findPinnedBaseURL(channel, responsesStateful.PinnedRoute.BaseURL)
+			if !ok {
+				err = fmt.Errorf("responses stateful route pinned to base url %s but it is unavailable", responsesStateful.PinnedRoute.BaseURL)
+				iter.Skip(channel.ID, responsesStateful.PinnedRoute.ChannelKeyID, channel.Name, err.Error())
+				lastErr = err
+				if responsesStateful.BlocksCrossRouteFailover() {
+					break
+				}
+				continue
+			}
+			selectedBaseURL = pinnedBaseURL
+		}
 		if selectedBaseURL == "" {
 			iter.Skip(channel.ID, 0, channel.Name, "no available base url")
 			continue
 		}
 
-		usedKey := channel.GetChannelKey()
+		usedKey := dbmodel.ChannelKey{}
+		if responsesStateful != nil && responsesStateful.HasPinnedRoute() {
+			pinnedKey, ok := findPinnedChannelKey(channel, responsesStateful.PinnedRoute.ChannelKeyID)
+			if !ok {
+				err = fmt.Errorf("responses stateful route pinned to channel key %d but it is unavailable", responsesStateful.PinnedRoute.ChannelKeyID)
+				iter.Skip(channel.ID, responsesStateful.PinnedRoute.ChannelKeyID, channel.Name, err.Error())
+				lastErr = err
+				if responsesStateful.BlocksCrossRouteFailover() {
+					break
+				}
+				continue
+			}
+			usedKey = pinnedKey
+		}
+		if usedKey.ChannelKey == "" {
+			usedKey = channel.GetChannelKey()
+		}
 		if usedKey.ChannelKey == "" {
 			iter.Skip(channel.ID, 0, channel.Name, "no available key")
 			continue
 		}
 		if iter.SkipCircuitBreak(channel.ID, usedKey.ID, channel.Name) {
+			if responsesStateful != nil && responsesStateful.HasPinnedRoute() && responsesStateful.BlocksCrossRouteFailover() {
+				lastErr = fmt.Errorf("responses stateful route is unavailable because the pinned route is circuit broken")
+				break
+			}
 			continue
 		}
 
@@ -335,17 +396,22 @@ func establishResponsesWebsocketSessionWithDialer(ctx context.Context, c *gin.Co
 		}
 
 		return &responsesWebsocketSession{
-			channel:         channel,
-			usedKey:         usedKey,
-			selectedBaseURL: selectedBaseURL,
-			upstreamConn:    upstreamConn,
-			upstreamModel:   item.ModelName,
-			iter:            iter,
-			span:            span,
+			groupID:           group.ID,
+			channel:           channel,
+			usedKey:           usedKey,
+			selectedBaseURL:   selectedBaseURL,
+			upstreamConn:      upstreamConn,
+			upstreamModel:     item.ModelName,
+			maxLifetime:       channel.GetResponsesWebsocketMaxLifetime(),
+			responsesStateful: responsesStateful,
+			iter:              iter,
+			span:              span,
 		}, nil
 	}
 
-	if !sawResponsesChannel {
+	if responsesStateful != nil && responsesStateful.HasPinnedRoute() && responsesStateful.BlocksCrossRouteFailover() && !matchedPinnedRoute {
+		lastErr = fmt.Errorf("responses stateful route pinned to channel %d but no matching route candidate is available", responsesStateful.PinnedRoute.ChannelID)
+	} else if !sawResponsesChannel {
 		lastErr = fmt.Errorf("no same-protocol channel for responses websocket")
 	}
 	if lastErr == nil {
@@ -354,10 +420,11 @@ func establishResponsesWebsocketSessionWithDialer(ctx context.Context, c *gin.Co
 	return &responsesWebsocketSession{iter: iter}, lastErr
 }
 
-func proxyResponsesWebsocket(clientConn, upstreamConn *websocket.Conn, metrics *RelayMetrics) error {
-	if clientConn == nil || upstreamConn == nil {
+func proxyResponsesWebsocket(clientConn *websocket.Conn, session *responsesWebsocketSession, metrics *RelayMetrics) error {
+	if clientConn == nil || session == nil || session.upstreamConn == nil {
 		return fmt.Errorf("websocket connection is nil")
 	}
+	upstreamConn := session.upstreamConn
 
 	applyResponsesWebsocketReadDeadline(clientConn)
 	applyResponsesWebsocketReadDeadline(upstreamConn)
@@ -391,6 +458,9 @@ func proxyResponsesWebsocket(clientConn, upstreamConn *websocket.Conn, metrics *
 				if messageType == websocket.TextMessage {
 					eventType := detectResponsesWebsocketEventType(payload)
 					metrics.RecordUpstreamEventType(eventType)
+					if session.responsesStateful != nil {
+						observeResponsesAffinityFromPayload(session.groupID, metrics.RequestModel, session.responsesStateful, payload)
+					}
 					if isResponsesWebsocketTerminalEvent(eventType) {
 						metrics.MarkTerminalSeen()
 					}
@@ -414,7 +484,23 @@ func proxyResponsesWebsocket(clientConn, upstreamConn *websocket.Conn, metrics *
 		}()
 	}
 
+	var lifetimeReached atomic.Bool
+	var lifetimeTimer *time.Timer
+	if session.maxLifetime > 0 {
+		lifetimeTimer = time.AfterFunc(session.maxLifetime, func() {
+			lifetimeReached.Store(true)
+			reason := fmt.Sprintf("responses websocket max lifetime reached after %s", formatRelayTimeout(session.maxLifetime))
+			writeWebsocketClose(clientConn, websocket.CloseGoingAway, reason)
+			writeWebsocketClose(upstreamConn, websocket.CloseGoingAway, reason)
+			_ = clientConn.Close()
+			_ = upstreamConn.Close()
+		})
+	}
+
 	firstResult := <-resultCh
+	if lifetimeTimer != nil {
+		lifetimeTimer.Stop()
+	}
 	if stopPing != nil {
 		close(stopPing)
 	}
@@ -424,7 +510,7 @@ func proxyResponsesWebsocket(clientConn, upstreamConn *websocket.Conn, metrics *
 	if stopPing != nil {
 		pingWG.Wait()
 	}
-	return evaluateResponsesWebsocketProxyResult(firstResult.source, firstResult.err, metrics)
+	return evaluateResponsesWebsocketProxyResult(firstResult.source, firstResult.err, metrics, lifetimeReached.Load())
 }
 
 func relayWebsocketMessages(src, dst *websocket.Conn, beforeWrite func(messageType int, payload []byte)) error {
@@ -510,7 +596,10 @@ func isExpectedWebsocketIdleTimeout(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "websocket idle timeout")
 }
 
-func evaluateResponsesWebsocketProxyResult(source string, err error, metrics *RelayMetrics) error {
+func evaluateResponsesWebsocketProxyResult(source string, err error, metrics *RelayMetrics, lifetimeReached bool) error {
+	if lifetimeReached {
+		return nil
+	}
 	if err == nil {
 		return nil
 	}

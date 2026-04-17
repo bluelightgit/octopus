@@ -591,6 +591,8 @@
             "channelProxyPlaceholder": "Optional: proxy for this channel (overrides global proxy)",
             "paramOverride": "Param Override",
             "paramOverridePlaceholder": "Optional: JSON string to override request params",
+            "responsesWebsocketMaxLifetime": "Responses WebSocket Session Lifetime (sec)",
+            "responsesWebsocketMaxLifetimeHint": "Only applies to OpenAI Responses channels. Controls how long the gateway keeps the upstream websocket alive before proactively reconnecting. Default is 3600 seconds.",
             "model": "Model",
             "enabled": "Enabled",
             "proxy": "Use Proxy",

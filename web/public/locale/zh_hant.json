@@ -591,6 +591,8 @@
             "channelProxyPlaceholder": "可選：僅對該供應源生效（覆蓋全域代理）",
             "paramOverride": "參數覆蓋",
             "paramOverridePlaceholder": "可選：JSON 字串，用於覆蓋請求參數",
+            "responsesWebsocketMaxLifetime": "Responses WS 連線時長(秒)",
+            "responsesWebsocketMaxLifetimeHint": "僅對 OpenAI Responses 供應源生效。用於控制網關主動關閉該上游 WebSocket 的最長連線時長，預設 3600 秒。",
             "model": "模型",
             "enabled": "啟用",
             "proxy": "使用代理",

@@ -14,6 +14,7 @@ import (
 
 	dbmodel "github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
+	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
 	"github.com/bestruirui/octopus/internal/transformer/outbound"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -454,7 +455,7 @@ func TestProxyResponsesWebsocket_ClientDisconnectAfterTerminalReturnsNil(t *test
 		_ = clientB.Close()
 	}()
 
-	err = proxyResponsesWebsocket(serverA, serverB, metrics)
+	err = proxyResponsesWebsocket(serverA, &responsesWebsocketSession{upstreamConn: serverB}, metrics)
 	if err != nil {
 		t.Fatalf("expected client disconnect after terminal to be ignored, got %v", err)
 	}
@@ -500,7 +501,7 @@ func TestEstablishResponsesWebsocketSession_DialerErrorFallsBack(t *testing.T) {
 	metrics := NewRelayMetrics(1, requestModel, nil)
 
 	var dialerCalls int32
-	session, err := establishResponsesWebsocketSessionWithDialer(ctx, c, loadedGroup, requestModel, metrics, func(channel *dbmodel.Channel) (*websocket.Dialer, error) {
+	session, err := establishResponsesWebsocketSessionWithDialer(ctx, c, loadedGroup, requestModel, metrics, nil, func(channel *dbmodel.Channel) (*websocket.Dialer, error) {
 		if channel.Name == "responses-ws-first" {
 			atomic.AddInt32(&dialerCalls, 1)
 			return nil, fmt.Errorf("dialer init failed")
@@ -565,5 +566,194 @@ func TestReadResponsesWebsocketCreateFrame_ParsesBody(t *testing.T) {
 	}
 	if !strings.Contains(string(internalRequest.RawRequest), `"store":false`) {
 		t.Fatalf("expected original body fields preserved, got %s", string(internalRequest.RawRequest))
+	}
+}
+
+func TestEstablishResponsesWebsocketSession_UsesPinnedResponsesStatefulRoute(t *testing.T) {
+	ctx := setupRelayTestEnv(t)
+	requestModel := "responses-ws-pinned-route"
+	group := createResponsesWebsocketGroup(t, ctx, requestModel, true)
+
+	firstChannel := createRelayTestChannel(t, ctx, "responses-ws-first", outbound.OutboundTypeOpenAIResponse, "http://example.invalid/v1")
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	var upstreamAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamAuth = r.Header.Get("Authorization")
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer upstream.Close()
+	secondChannel := createRelayTestChannel(t, ctx, "responses-ws-second", outbound.OutboundTypeOpenAIResponse, upstream.URL+"/v1")
+
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{GroupID: group.ID, ChannelID: firstChannel.ID, ModelName: "first-upstream", Priority: 1, Weight: 1}, ctx); err != nil {
+		t.Fatalf("add first channel failed: %v", err)
+	}
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{GroupID: group.ID, ChannelID: secondChannel.ID, ModelName: "second-upstream", Priority: 2, Weight: 1}, ctx); err != nil {
+		t.Fatalf("add second channel failed: %v", err)
+	}
+
+	loadedGroup, err := op.GroupGetEnabledMap(requestModel, ctx)
+	if err != nil {
+		t.Fatalf("GroupGetEnabledMap failed: %v", err)
+	}
+	req := &transformerModel.InternalLLMRequest{
+		Model:        requestModel,
+		RawAPIFormat: transformerModel.APIFormatOpenAIResponse,
+		RawRequest:   []byte(`{"model":"responses-ws-pinned-route","previous_response_id":"resp_prev","input":"hi"}`),
+	}
+	responsesStateful := buildResponsesStatefulRequestContext(loadedGroup, 1001, requestModel, req)
+	if responsesStateful == nil {
+		t.Fatal("expected responses stateful context")
+	}
+	rememberResponsesAffinityRoute(1001, responsesStateful.AllLookupKeys(), affinityRoute{
+		ChannelID:    secondChannel.ID,
+		ChannelKeyID: secondChannel.Keys[0].ID,
+		BaseURL:      secondChannel.BaseUrls[0].URL,
+	})
+	t.Cleanup(func() {
+		for _, key := range responsesStateful.AllLookupKeys() {
+			responsesAffinityStore.Delete(responsesAffinityStoreKey(1001, key))
+		}
+	})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	c.Set("api_key_id", 1001)
+	metrics := NewRelayMetrics(1001, requestModel, req)
+
+	session, err := establishResponsesWebsocketSessionWithDialer(ctx, c, loadedGroup, requestModel, metrics, responsesStateful, func(channel *dbmodel.Channel) (*websocket.Dialer, error) {
+		return websocket.DefaultDialer, nil
+	})
+	if err != nil {
+		t.Fatalf("expected pinned session, got error %v", err)
+	}
+	defer session.upstreamConn.Close()
+	if session.channel == nil || session.channel.ID != secondChannel.ID {
+		t.Fatalf("expected pinned second channel, got %#v", session.channel)
+	}
+	if session.usedKey.ID != secondChannel.Keys[0].ID {
+		t.Fatalf("expected pinned key %d, got %d", secondChannel.Keys[0].ID, session.usedKey.ID)
+	}
+	if normalizeAffinityBaseURL(session.selectedBaseURL) != normalizeAffinityBaseURL(secondChannel.BaseUrls[0].URL) {
+		t.Fatalf("expected pinned base url %s, got %s", secondChannel.BaseUrls[0].URL, session.selectedBaseURL)
+	}
+	if session.maxLifetime != secondChannel.GetResponsesWebsocketMaxLifetime() {
+		t.Fatalf("expected max lifetime %s, got %s", secondChannel.GetResponsesWebsocketMaxLifetime(), session.maxLifetime)
+	}
+	if upstreamAuth != "Bearer upstream-key" {
+		t.Fatalf("unexpected upstream authorization: %s", upstreamAuth)
+	}
+}
+
+func TestEvaluateResponsesWebsocketProxyResult_IgnoresConfiguredLifetimeClose(t *testing.T) {
+	err := evaluateResponsesWebsocketProxyResult("upstream_to_client", &responsesWebsocketRelayIOError{Op: "read", Err: &websocket.CloseError{Code: websocket.CloseGoingAway, Text: "timeout"}}, nil, true)
+	if err != nil {
+		t.Fatalf("expected lifetime close to be ignored, got %v", err)
+	}
+}
+
+func TestChannelCreate_NormalizesResponsesWebsocketMaxLifetime(t *testing.T) {
+	ctx := setupRelayTestEnv(t)
+	channel := &dbmodel.Channel{
+		Name:                             "responses-ws-lifetime-default",
+		Type:                             outbound.OutboundTypeOpenAIResponse,
+		Enabled:                          true,
+		BaseUrls:                         []dbmodel.BaseUrl{{URL: "https://example.invalid/v1"}},
+		Keys:                             []dbmodel.ChannelKey{{Enabled: true, ChannelKey: "upstream-key"}},
+		ResponsesWebsocketMaxLifetimeSec: 0,
+	}
+	if err := op.ChannelCreate(channel, ctx); err != nil {
+		t.Fatalf("ChannelCreate failed: %v", err)
+	}
+	if channel.ResponsesWebsocketMaxLifetimeSec != dbmodel.DefaultResponsesWebsocketMaxLifetimeSec {
+		t.Fatalf("expected normalized lifetime %d, got %d", dbmodel.DefaultResponsesWebsocketMaxLifetimeSec, channel.ResponsesWebsocketMaxLifetimeSec)
+	}
+	stored, err := op.ChannelGet(channel.ID, ctx)
+	if err != nil {
+		t.Fatalf("ChannelGet failed: %v", err)
+	}
+	if stored.GetResponsesWebsocketMaxLifetimeSec() != dbmodel.DefaultResponsesWebsocketMaxLifetimeSec {
+		t.Fatalf("expected stored lifetime %d, got %d", dbmodel.DefaultResponsesWebsocketMaxLifetimeSec, stored.GetResponsesWebsocketMaxLifetimeSec())
+	}
+}
+
+func TestChannelUpdate_UpdatesResponsesWebsocketMaxLifetime(t *testing.T) {
+	ctx := setupRelayTestEnv(t)
+	channel := createRelayTestChannel(t, ctx, "responses-ws-update-lifetime", outbound.OutboundTypeOpenAIResponse, "https://example.invalid/v1")
+	lifetime := 120
+	updated, err := op.ChannelUpdate(&dbmodel.ChannelUpdateRequest{ID: channel.ID, ResponsesWebsocketMaxLifetimeSec: &lifetime}, ctx)
+	if err != nil {
+		t.Fatalf("ChannelUpdate failed: %v", err)
+	}
+	if updated.GetResponsesWebsocketMaxLifetimeSec() != 120 {
+		t.Fatalf("expected updated lifetime 120, got %d", updated.GetResponsesWebsocketMaxLifetimeSec())
+	}
+}
+
+func TestHandleResponsesWebsocket_ClosesAfterConfiguredLifetime(t *testing.T) {
+	ctx := setupRelayTestEnv(t)
+	apiKey := createRelayTestAPIKey(t, ctx)
+
+	requestModel := "responses-ws-lifetime-close"
+	upstreamModel := "responses-ws-upstream"
+	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+		_, _, _ = conn.ReadMessage()
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.created","response":{"id":"resp_1","object":"response","model":"responses-ws-upstream","status":"in_progress","output":[]}}`))
+		time.Sleep(1500 * time.Millisecond)
+	}))
+	defer upstream.Close()
+
+	channel := createRelayTestChannel(t, ctx, "responses-ws-channel", outbound.OutboundTypeOpenAIResponse, upstream.URL+"/v1")
+	lifetime := 1
+	if _, err := op.ChannelUpdate(&dbmodel.ChannelUpdateRequest{ID: channel.ID, ResponsesWebsocketMaxLifetimeSec: &lifetime}, ctx); err != nil {
+		t.Fatalf("ChannelUpdate failed: %v", err)
+	}
+	group := createResponsesWebsocketGroup(t, ctx, requestModel, true)
+	if err := op.GroupItemAdd(&dbmodel.GroupItem{GroupID: group.ID, ChannelID: channel.ID, ModelName: upstreamModel, Priority: 1, Weight: 1}, ctx); err != nil {
+		t.Fatalf("GroupItemAdd failed: %v", err)
+	}
+
+	octopus := newResponsesWebsocketTestServer(apiKey.ID, requestModel)
+	defer octopus.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial(websocketURLFromHTTP(octopus.URL)+"/v1/responses", nil)
+	if err != nil {
+		t.Fatalf("dial octopus websocket failed: %v", err)
+	}
+	defer conn.Close()
+
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"responses-ws-lifetime-close","input":"hi"}`)); err != nil {
+		t.Fatalf("write first frame failed: %v", err)
+	}
+	_, _, err = conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("expected initial response.created, got %v", err)
+	}
+	_, _, err = conn.ReadMessage()
+	if err == nil {
+		t.Fatal("expected websocket close after configured lifetime")
+	}
+	closeErr, ok := err.(*websocket.CloseError)
+	if !ok {
+		t.Fatalf("expected close error, got %T: %v", err, err)
+	}
+	if closeErr.Code != websocket.CloseGoingAway {
+		t.Fatalf("unexpected close code: %d", closeErr.Code)
+	}
+	if !strings.Contains(closeErr.Text, "max lifetime") {
+		t.Fatalf("unexpected close reason: %s", closeErr.Text)
 	}
 }
