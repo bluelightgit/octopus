@@ -584,7 +584,7 @@ export function ChannelForm({
                                     <label htmlFor={`${idPrefix}-responses-websocket-max-lifetime`} className="text-sm font-medium text-card-foreground">
                                         {t('responsesWebsocketMaxLifetime')}
                                     </label>
-                                    <Tooltip>
+                                    <Tooltip side="top">
                                         <TooltipTrigger asChild>
                                             <button
                                                 type="button"
@@ -594,7 +594,7 @@ export function ChannelForm({
                                                 <CircleHelp className="size-4" />
                                             </button>
                                         </TooltipTrigger>
-                                        <TooltipContent side="top" className="max-w-xs text-sm">
+                                        <TooltipContent className="max-w-xs text-sm">
                                             {t('responsesWebsocketMaxLifetimeHint')}
                                         </TooltipContent>
                                     </Tooltip>
@@ -666,3 +666,4 @@ export function ChannelForm({
         </form>
     );
 }
+
