@@ -102,7 +102,7 @@ export function LoginForm({ onLoginSuccess }: { onLoginSuccess?: () => void }) {
 
           <form onSubmit={handleSubmit} className="space-y-6 pt-2">
             <TabsContents className="p-3 -mx-3 py-6">
-              <TabsContent value="user" className="space-y-6">
+              <TabsContent value="user" className="space-y-6" style={{ overflow: 'visible' }}>
                 <Field>
                   <FieldLabel htmlFor="username">{t('username')}</FieldLabel>
                   <Input
@@ -128,7 +128,7 @@ export function LoginForm({ onLoginSuccess }: { onLoginSuccess?: () => void }) {
                   />
                 </Field>
               </TabsContent>
-              <TabsContent value="apikey">
+              <TabsContent value="apikey" style={{ overflow: 'visible' }}>
                 <Field>
                   <FieldLabel htmlFor="apikey">{t('apikey')}</FieldLabel>
                   <Input

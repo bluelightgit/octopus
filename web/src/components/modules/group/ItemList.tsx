@@ -301,7 +301,27 @@ export function MemberList({
                     onDragStart={() => onDragStart?.()}
                     onDragEnd={handleDragEnd}
                 >
-                    <Droppable droppableId={`members-${layoutScope}`}>
+                    <Droppable
+                        droppableId={`members-${layoutScope}`}
+                        renderClone={(draggableProvided, snapshot, rubric) => (
+                            <MemberItem
+                                member={members[rubric.source.index]}
+                                onRemove={onRemove}
+                                onWeightChange={onWeightChange}
+                                isRemoving={false}
+                                index={rubric.source.index}
+                                showWeight={showWeight}
+                                showConfirmDelete={showConfirmDelete}
+                                layoutScope={layoutScope}
+                                dnd={{
+                                    innerRef: draggableProvided.innerRef,
+                                    draggableProps: draggableProvided.draggableProps,
+                                    dragHandleProps: draggableProvided.dragHandleProps,
+                                    isDragging: snapshot.isDragging,
+                                }}
+                            />
+                        )}
+                    >
                         {(droppableProvided) => (
                             <div
                                 ref={droppableProvided.innerRef}
