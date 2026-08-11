@@ -60,14 +60,8 @@ func getModelList(c *gin.Context) {
 		resp.Error(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	apiKeyId := c.GetInt("api_key_id")
-	apiKey, err := op.APIKeyGet(apiKeyId, c.Request.Context())
-	if err != nil {
-		resp.Error(c, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if apiKey.SupportedModels != "" {
-		supportedModels := lo.Map(strings.Split(apiKey.SupportedModels, ","), func(s string, _ int) string {
+	if supportedModelsValue := c.GetString("supported_models"); supportedModelsValue != "" {
+		supportedModels := lo.Map(strings.Split(supportedModelsValue, ","), func(s string, _ int) string {
 			return strings.TrimSpace(s)
 		})
 		models = lo.Filter(models, func(m string, _ int) bool {
@@ -75,7 +69,7 @@ func getModelList(c *gin.Context) {
 		})
 	}
 
-	if c.GetString("request_type") == "anthropic" {
+	if c.GetHeader("x-api-key") != "" {
 		var anthropicModels []model.AnthropicModel
 		for _, m := range models {
 			anthropicModels = append(anthropicModels, model.AnthropicModel{
