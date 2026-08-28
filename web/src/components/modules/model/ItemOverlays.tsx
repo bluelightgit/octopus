@@ -59,6 +59,7 @@ export function ModelDeleteOverlay({
 
 type ModelEditOverlayProps = {
     layoutId: string;
+    onHeightChange?: (height: number) => void;
     modelName: string;
     brandColor: string;
     editValues: EditValues;
@@ -70,6 +71,7 @@ type ModelEditOverlayProps = {
 
 export function ModelEditOverlay({
     layoutId,
+    onHeightChange,
     modelName,
     brandColor,
     editValues,
@@ -82,7 +84,12 @@ export function ModelEditOverlay({
     return (
         <motion.div
             layoutId={layoutId}
-            className="absolute inset-x-0 top-0 z-20 flex flex-col bg-card p-5 rounded-3xl border border-border custom-shadow"
+            ref={(node) => {
+                if (node && onHeightChange) {
+                    onHeightChange(node.offsetHeight);
+                }
+            }}
+            className="flex flex-col bg-card p-5 rounded-3xl border border-border custom-shadow"
             transition={{ type: 'spring', stiffness: 400, damping: 30 }}
         >
             <h3 className="text-sm font-semibold text-card-foreground line-clamp-1 mb-3">

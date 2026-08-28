@@ -29,6 +29,7 @@ export const ModelItem = memo(function ModelItem({ model, layout = 'grid' }: Mod
     const cardRef = useRef<HTMLElement | null>(null);
     const editButtonRef = useRef<HTMLButtonElement | null>(null);
     const editOverlayRef = useRef<HTMLDivElement | null>(null);
+    const editOverlayHeightRef = useRef(0);
     const [editValues, setEditValues] = useState(() => ({
         input: model.input.toString(),
         output: model.output.toString(),
@@ -45,13 +46,24 @@ export const ModelItem = memo(function ModelItem({ model, layout = 'grid' }: Mod
         const card = cardRef.current;
         if (!card) return;
         const rect = card.getBoundingClientRect();
+        const height = editOverlayHeightRef.current;
+        const flipUp = height > 0 && rect.top + height > window.innerHeight;
+        const top = flipUp
+            ? Math.min(Math.max(rect.bottom - height, 0), Math.max(window.innerHeight - height, 0))
+            : rect.top;
         setOverlayRect((prev) => {
-            if (prev && prev.top === rect.top && prev.left === rect.left && prev.width === rect.width) {
+            if (prev && prev.top === top && prev.left === rect.left && prev.width === rect.width) {
                 return prev;
             }
-            return { top: rect.top, left: rect.left, width: rect.width };
+            return { top, left: rect.left, width: rect.width };
         });
     }, []);
+
+    const handleOverlayHeightChange = useCallback((height: number) => {
+        if (height === editOverlayHeightRef.current) return;
+        editOverlayHeightRef.current = height;
+        updateOverlayRect();
+    }, [updateOverlayRect]);
 
     const closeEdit = useCallback(() => {
         setIsEditOpen(false);
@@ -248,18 +260,17 @@ export const ModelItem = memo(function ModelItem({ model, layout = 'grid' }: Mod
                                     width: `${overlayRect.width}px`,
                                 }}
                             >
-                                <div className="relative">
-                                    <ModelEditOverlay
-                                        layoutId={editLayoutId}
-                                        modelName={model.name}
-                                        brandColor={brandColor}
-                                        editValues={editValues}
-                                        isPending={updateModel.isPending}
-                                        onChange={setEditValues}
-                                        onCancel={handleCancelEdit}
-                                        onSave={handleSaveEdit}
-                                    />
-                                </div>
+                                <ModelEditOverlay
+                                    layoutId={editLayoutId}
+                                    onHeightChange={handleOverlayHeightChange}
+                                    modelName={model.name}
+                                    brandColor={brandColor}
+                                    editValues={editValues}
+                                    isPending={updateModel.isPending}
+                                    onChange={setEditValues}
+                                    onCancel={handleCancelEdit}
+                                    onSave={handleSaveEdit}
+                                />
                             </div>
                         )}
                     </AnimatePresence>,
