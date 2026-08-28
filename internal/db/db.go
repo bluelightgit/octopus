@@ -48,6 +48,14 @@ func InitDB(dbType, dsn string, debug bool) error {
 	if err != nil {
 		return err
 	}
+	if dbType == "sqlite" {
+		// Set this explicitly before AutoMigrate creates tables. The driver
+		// accepts the _pragma URL form, but applying the setting here also
+		// covers fresh databases consistently across driver versions.
+		if err := db.Exec("PRAGMA auto_vacuum=INCREMENTAL;").Error; err != nil {
+			return err
+		}
+	}
 
 	sqlDB, err := db.DB()
 	if err != nil {
@@ -100,14 +108,18 @@ func InitDB(dbType, dsn string, debug bool) error {
 
 func initSQLite(path string, config *gorm.Config) (*gorm.DB, error) {
 	params := []string{
-		"_journal_mode=WAL",
-		"_synchronous=NORMAL",
-		"_cache_size=10000",
-		"_busy_timeout=5000",
-		"_foreign_keys=ON",
-		"_auto_vacuum=INCREMENTAL",
-		"_mmap_size=268435456",
-		"_locking_mode=NORMAL",
+		// glebarez/sqlite uses modernc.org/sqlite, whose connection options
+		// apply SQLite pragmas through repeated _pragma query parameters.
+		// auto_vacuum must be selected before the first schema object is
+		// created and before switching the new database into WAL mode.
+		"_pragma=auto_vacuum(2)",
+		"_pragma=journal_mode(WAL)",
+		"_pragma=synchronous(NORMAL)",
+		"_pragma=cache_size(10000)",
+		"_pragma=busy_timeout(5000)",
+		"_pragma=foreign_keys(ON)",
+		"_pragma=mmap_size(268435456)",
+		"_pragma=locking_mode(NORMAL)",
 	}
 	return gorm.Open(sqlite.Open(path+"?"+strings.Join(params, "&")), config)
 }

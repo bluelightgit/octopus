@@ -37,8 +37,8 @@ var sqliteCheckCmd = &cobra.Command{
 			log.Infof("database is not sqlite")
 			return
 		}
-		log.Infof("sqlite status: path=%s journal_mode=%s auto_vacuum=%s(%d) wal_autocheckpoint=%d page_count=%d freelist_count=%d wal_size_bytes=%d needs_repair=%t",
-			status.DBPath, status.JournalMode, status.AutoVacuumMode, status.AutoVacuum, status.WALAutoCheckpoint, status.PageCount, status.FreelistCount, status.WALSizeBytes, status.AutoVacuumNeedsVacuum)
+		log.Infof("sqlite status: path=%s journal_mode=%s auto_vacuum=%s(%d) wal_autocheckpoint=%d page_size=%d page_count=%d freelist_count=%d db_size_bytes=%d wal_size_bytes=%d total_size_bytes=%d reclaimable_bytes=%d needs_repair=%t",
+			status.DBPath, status.JournalMode, status.AutoVacuumMode, status.AutoVacuum, status.WALAutoCheckpoint, status.PageSize, status.PageCount, status.FreelistCount, status.DBSizeBytes, status.WALSizeBytes, status.TotalSizeBytes, status.ReclaimableBytes, status.AutoVacuumNeedsVacuum)
 	},
 }
 
@@ -62,8 +62,8 @@ var sqliteRepairCmd = &cobra.Command{
 			log.Errorf("sqlite repair error: %v", err)
 			return
 		}
-		log.Infof("sqlite repair completed: path=%s journal_mode=%s auto_vacuum=%s(%d) wal_autocheckpoint=%d page_count=%d freelist_count=%d wal_size_bytes=%d",
-			status.DBPath, status.JournalMode, status.AutoVacuumMode, status.AutoVacuum, status.WALAutoCheckpoint, status.PageCount, status.FreelistCount, status.WALSizeBytes)
+		log.Infof("sqlite repair completed: path=%s journal_mode=%s auto_vacuum=%s(%d) wal_autocheckpoint=%d page_size=%d page_count=%d freelist_count=%d db_size_bytes=%d wal_size_bytes=%d total_size_bytes=%d reclaimable_bytes=%d",
+			status.DBPath, status.JournalMode, status.AutoVacuumMode, status.AutoVacuum, status.WALAutoCheckpoint, status.PageSize, status.PageCount, status.FreelistCount, status.DBSizeBytes, status.WALSizeBytes, status.TotalSizeBytes, status.ReclaimableBytes)
 	},
 }
 

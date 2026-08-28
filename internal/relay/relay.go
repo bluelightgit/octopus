@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bestruirui/octopus/internal/activity"
 	"github.com/bestruirui/octopus/internal/helper"
 	dbmodel "github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
@@ -27,6 +28,9 @@ import (
 
 // Handler 处理入站请求并转发到上游服务
 func Handler(inboundType inbound.InboundType, c *gin.Context) {
+	endRelayActivity := activity.BeginRelayRequest()
+	defer endRelayActivity()
+
 	internalRequest, inAdapter, err := parseRequest(inboundType, c)
 	if err != nil {
 		return

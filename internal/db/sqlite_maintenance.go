@@ -35,9 +35,14 @@ type SQLitePragmaStatus struct {
 	AutoVacuum            int
 	AutoVacuumMode        string
 	WALAutoCheckpoint     int
+	PageSize              int
 	PageCount             int
 	FreelistCount         int
+	DBSizeBytes           int64
 	WALSizeBytes          int64
+	SHMSizeBytes          int64
+	TotalSizeBytes        int64
+	ReclaimableBytes      int64
 	AutoVacuumNeedsVacuum bool
 }
 
@@ -99,19 +104,33 @@ func InspectSQLitePragmas(ctx context.Context) (*SQLitePragmaStatus, error) {
 	if status.WALAutoCheckpoint, err = querySQLiteIntPragma(dbConn, "wal_autocheckpoint"); err != nil {
 		return nil, err
 	}
+	if status.PageSize, err = querySQLiteIntPragma(dbConn, "page_size"); err != nil {
+		return nil, err
+	}
 	if status.PageCount, err = querySQLiteIntPragma(dbConn, "page_count"); err != nil {
 		return nil, err
 	}
 	if status.FreelistCount, err = querySQLiteIntPragma(dbConn, "freelist_count"); err != nil {
 		return nil, err
 	}
+	status.ReclaimableBytes = int64(status.PageSize) * int64(status.FreelistCount)
 
 	if sqlitePath != "" {
-		if info, statErr := os.Stat(sqlitePath + "-wal"); statErr == nil {
-			status.WALSizeBytes = info.Size()
-		} else if !os.IsNotExist(statErr) {
-			return nil, statErr
+		for path, target := range map[string]*int64{
+			sqlitePath:          &status.DBSizeBytes,
+			sqlitePath + "-wal": &status.WALSizeBytes,
+			sqlitePath + "-shm": &status.SHMSizeBytes,
+		} {
+			info, statErr := os.Stat(path)
+			if statErr == nil {
+				*target = info.Size()
+				continue
+			}
+			if !os.IsNotExist(statErr) {
+				return nil, statErr
+			}
 		}
+		status.TotalSizeBytes = status.DBSizeBytes + status.WALSizeBytes + status.SHMSizeBytes
 	}
 
 	return status, nil
@@ -157,9 +176,31 @@ func SQLiteWALCheckpointIfNeeded(ctx context.Context, thresholdBytes int64) (*SQ
 	return result, nil
 }
 
+// SQLiteIncrementalVacuum reclaims at most maxPages free pages. Keeping the
+// amount bounded makes it safe to invoke from a background maintenance task;
+// the next pass can continue where this one stopped.
+func SQLiteIncrementalVacuum(ctx context.Context, maxPages int) error {
+	if !IsSQLite() {
+		return nil
+	}
+	if maxPages <= 0 {
+		return fmt.Errorf("sqlite incremental vacuum max pages must be positive")
+	}
+	return GetDB().WithContext(ctx).Exec(fmt.Sprintf("PRAGMA incremental_vacuum(%d);", maxPages)).Error
+}
+
 func RepairSQLiteAutoVacuum(ctx context.Context) (*SQLitePragmaStatus, error) {
 	if !IsSQLite() {
 		return nil, fmt.Errorf("database is not sqlite")
+	}
+
+	// A journal-mode switch requires every other SQLite connection to be
+	// closed. The application normally keeps a separate read pool open, so
+	// close that pool first. The repair command is intended for a stopped
+	// service and exits after this operation, making it safe to leave the read
+	// pool closed here.
+	if err := closeSQLiteReadPool(); err != nil {
+		return nil, err
 	}
 
 	if _, err := SQLiteWALCheckpoint(ctx, SQLiteCheckpointModeTruncate); err != nil {
@@ -188,6 +229,18 @@ func RepairSQLiteAutoVacuum(ctx context.Context) (*SQLitePragmaStatus, error) {
 		return nil, fmt.Errorf("sqlite auto_vacuum repair did not take effect")
 	}
 	return status, nil
+}
+
+func closeSQLiteReadPool() error {
+	if dbRead == nil {
+		return nil
+	}
+	readSQLDB, err := dbRead.DB()
+	if err != nil {
+		return err
+	}
+	dbRead = nil
+	return readSQLDB.Close()
 }
 
 func sqliteAutoVacuumModeName(mode int) string {

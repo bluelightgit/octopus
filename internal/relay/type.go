@@ -27,6 +27,9 @@ var (
 )
 
 func init() {
+	maxLoggedClientRequestBytes = relayPayloadLimitFromEnv("RELAY_MAX_LOGGED_CLIENT_REQUEST_BYTES", defaultMaxLoggedClientRequestBytes)
+	maxLoggedClientResponseBytes = relayPayloadLimitFromEnv("RELAY_MAX_LOGGED_CLIENT_RESPONSE_BYTES", defaultMaxLoggedClientResponseBytes)
+
 	if raw := strings.TrimSpace(os.Getenv(strings.ToUpper(conf.APP_NAME) + "_RELAY_MAX_SSE_EVENT_SIZE")); raw != "" {
 		if v, err := strconv.Atoi(raw); err == nil && v > 0 {
 			maxSSEEventSize = v
@@ -47,6 +50,19 @@ func init() {
 			relayResponsesPreludeTimeout = time.Duration(v) * time.Millisecond
 		}
 	}
+}
+
+func relayPayloadLimitFromEnv(suffix string, fallback int) int {
+	name := strings.ToUpper(conf.APP_NAME) + "_" + suffix
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 {
+		return fallback
+	}
+	return value
 }
 
 func ReloadRuntimeSettings() {

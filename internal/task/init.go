@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/bestruirui/octopus/internal/conf"
+	"github.com/bestruirui/octopus/internal/db"
 	"github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/price"
@@ -11,15 +13,18 @@ import (
 )
 
 const (
-	TaskPriceUpdate  = "price_update"
-	TaskStatsSave    = "stats_save"
-	TaskRelayLogSave = "relay_log_save"
-	TaskSyncLLM      = "sync_llm"
-	TaskCleanLLM     = "clean_llm"
-	TaskBaseUrlDelay = "base_url_delay"
+	TaskPriceUpdate       = "price_update"
+	TaskStatsSave         = "stats_save"
+	TaskRelayLogSave      = "relay_log_save"
+	TaskSQLiteMaintenance = "sqlite_maintenance"
+	TaskSyncLLM           = "sync_llm"
+	TaskCleanLLM          = "clean_llm"
+	TaskBaseUrlDelay      = "base_url_delay"
 )
 
 func Init() {
+	registerRelayLogTask()
+
 	priceUpdateIntervalHours, err := op.SettingGetInt(model.SettingKeyModelInfoUpdateInterval)
 	if err != nil {
 		log.Errorf("failed to get model info update interval: %v", err)
@@ -53,7 +58,23 @@ func Init() {
 	}
 	statsSaveInterval := time.Duration(statsSaveIntervalMinutes) * time.Minute
 	Register(TaskStatsSave, statsSaveInterval, false, op.StatsSaveDBTask)
-	// 注册中继日志保存任务
+}
+
+func registerRelayLogTask() {
+	if db.IsSQLite() {
+		config := conf.AppConfig.SQLiteMaintenance.WithDefaults()
+		if config.Enabled {
+			Register(TaskSQLiteMaintenance, time.Duration(config.IntervalSeconds)*time.Second, false, func() {
+				if err := op.SQLiteMaintenanceTask(context.Background()); err != nil {
+					log.Warnf("sqlite maintenance task failed: %v", err)
+				}
+			})
+			return
+		}
+	}
+
+	// Non-SQLite databases and explicitly disabled SQLite maintenance retain
+	// the regular relay-log persistence task.
 	Register(TaskRelayLogSave, 10*time.Minute, false, func() {
 		if err := op.RelayLogSaveDBTask(context.Background()); err != nil {
 			log.Warnf("relay log save db task failed: %v", err)

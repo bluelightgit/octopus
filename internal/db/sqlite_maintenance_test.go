@@ -85,4 +85,44 @@ func TestRepairSQLiteAutoVacuum_RepairsLegacyDatabase(t *testing.T) {
 	if status.JournalMode != sqliteDesiredJournalMode {
 		t.Fatalf("expected repaired journal_mode=%s, got %s", sqliteDesiredJournalMode, status.JournalMode)
 	}
+	if status.PageSize <= 0 {
+		t.Fatalf("expected a positive sqlite page size, got %d", status.PageSize)
+	}
+	if status.DBSizeBytes <= 0 || status.TotalSizeBytes <= 0 {
+		t.Fatalf("expected sqlite file sizes, db=%d total=%d", status.DBSizeBytes, status.TotalSizeBytes)
+	}
+}
+
+func TestSQLiteIncrementalVacuumRejectsInvalidPageLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "invalid-vacuum.db")
+	if err := InitDB("sqlite", path, false); err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	t.Cleanup(func() { _ = Close() })
+
+	if err := SQLiteIncrementalVacuum(context.Background(), 0); err == nil {
+		t.Fatal("expected invalid incremental vacuum page limit to fail")
+	}
+}
+
+func TestInitSQLiteEnablesIncrementalAutoVacuumForNewDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "new.db")
+	if err := InitDB("sqlite", path, false); err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	t.Cleanup(func() { _ = Close() })
+
+	status, err := EnsureSQLiteRuntimePragmas(context.Background())
+	if err != nil {
+		t.Fatalf("EnsureSQLiteRuntimePragmas failed: %v", err)
+	}
+	if status == nil {
+		t.Fatal("expected sqlite pragma status")
+	}
+	if status.AutoVacuum != SQLiteAutoVacuumIncremental {
+		t.Fatalf("expected new database auto_vacuum=%d, got %d (%s)", SQLiteAutoVacuumIncremental, status.AutoVacuum, status.AutoVacuumMode)
+	}
+	if status.AutoVacuumNeedsVacuum {
+		t.Fatal("new database should not require auto_vacuum repair")
+	}
 }

@@ -17,10 +17,19 @@ import (
 )
 
 const (
-	maxLoggedClientRequestBytes    = 512 * 1024
-	maxLoggedClientResponseBytes   = 1024 * 1024
-	maxLoggedUpstreamEventTypes    = 16
-	maxLoggedExecutionTraceEntries = 48
+	defaultMaxLoggedClientRequestBytes  = 512 * 1024
+	defaultMaxLoggedClientResponseBytes = 1024 * 1024
+	maxLoggedUpstreamEventTypes         = 16
+	maxLoggedExecutionTraceEntries      = 48
+)
+
+var (
+	// A value of zero means unlimited. The default remains bounded for
+	// compatibility; SQLite deployments that need the complete payload can set
+	// the corresponding OCTOPUS_RELAY_MAX_LOGGED_*_BYTES environment variable
+	// to 0.
+	maxLoggedClientRequestBytes  = defaultMaxLoggedClientRequestBytes
+	maxLoggedClientResponseBytes = defaultMaxLoggedClientResponseBytes
 )
 
 // RelayMetrics 负责最终的日志收集与持久化

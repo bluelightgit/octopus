@@ -35,8 +35,8 @@ var startCmd = &cobra.Command{
 			log.Errorf("sqlite runtime pragma check error: %v", err)
 			return
 		} else if status != nil {
-			log.Infof("sqlite runtime status: journal_mode=%s auto_vacuum=%s(%d) wal_autocheckpoint=%d freelist_count=%d wal_size_bytes=%d",
-				status.JournalMode, status.AutoVacuumMode, status.AutoVacuum, status.WALAutoCheckpoint, status.FreelistCount, status.WALSizeBytes)
+			log.Infof("sqlite runtime status: journal_mode=%s auto_vacuum=%s(%d) wal_autocheckpoint=%d page_count=%d freelist_count=%d total_size_bytes=%d reclaimable_bytes=%d wal_size_bytes=%d",
+				status.JournalMode, status.AutoVacuumMode, status.AutoVacuum, status.WALAutoCheckpoint, status.PageCount, status.FreelistCount, status.TotalSizeBytes, status.ReclaimableBytes, status.WALSizeBytes)
 		}
 
 		if err := op.InitCache(); err != nil {

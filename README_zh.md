@@ -123,6 +123,31 @@ http://localhost:3000
 | `database.path` | 数据库连接地址 | `data/data.db` |
 | `log.level` | 日志级别 | `info` |
 
+**SQLite 后台维护：**
+
+SQLite 模式默认启用低负载后台维护。它会先按日志保留周期清理旧日志，然后仅在没有活跃 relay 请求且空闲达到指定时间时，分批执行增量 vacuum。SSE 等长连接仍处于 relay 请求期间时不会执行维护。
+
+可以在 `data/config.json` 中配置：
+
+```json
+{
+  "sqlite_maintenance": {
+    "enabled": true,
+    "interval_seconds": 600,
+    "idle_seconds": 300,
+    "min_database_bytes": 536870912,
+    "min_reclaimable_bytes": 67108864,
+    "wal_checkpoint_threshold_bytes": 67108864,
+    "max_pages_per_run": 4096,
+    "max_duration_seconds": 5
+  }
+}
+```
+
+也可以使用同名环境变量覆盖，例如 `OCTOPUS_SQLITE_MAINTENANCE_IDLE_SECONDS`。`min_database_bytes` 为 0 可取消数据库总大小门槛；不建议将 `max_pages_per_run` 或 `max_duration_seconds` 设置得过大。
+
+如果数据库的 `auto_vacuum` 仍为 `none`，需要先停止服务并执行一次 `octopus sqlite repair`，之后后台增量 vacuum 才能生效。
+
 **数据库配置：**
 
 支持三种数据库：
@@ -174,6 +199,16 @@ http://localhost:3000
 | `OCTOPUS_RELAY_NON_STREAM_TIMEOUT_MS` | Relay 非流式请求总超时，默认 300000ms |
 | `OCTOPUS_RELAY_STREAM_IDLE_TIMEOUT_MS` | Relay 流式请求事件空闲超时，默认 90000ms |
 | `OCTOPUS_RELAY_RESPONSES_PRELUDE_TIMEOUT_MS` | OpenAI Responses 同协议透传且仅收到前导事件时的兜底超时；仅在分组首 token 超时未设置时生效，默认 30000ms |
+| `OCTOPUS_SQLITE_MAINTENANCE_ENABLED` | 是否启用 SQLite 后台维护，默认 `true` |
+| `OCTOPUS_SQLITE_MAINTENANCE_INTERVAL_SECONDS` | SQLite 维护任务间隔，默认 600 秒 |
+| `OCTOPUS_SQLITE_MAINTENANCE_IDLE_SECONDS` | 触发维护前需要保持空闲的时间，默认 300 秒 |
+| `OCTOPUS_SQLITE_MAINTENANCE_MIN_DATABASE_BYTES` | 数据库总大小门槛，默认 536870912 字节 |
+| `OCTOPUS_SQLITE_MAINTENANCE_MIN_RECLAIMABLE_BYTES` | 可回收空间门槛，默认 67108864 字节 |
+| `OCTOPUS_SQLITE_MAINTENANCE_WAL_CHECKPOINT_THRESHOLD_BYTES` | WAL checkpoint 门槛，默认 67108864 字节 |
+| `OCTOPUS_SQLITE_MAINTENANCE_MAX_PAGES_PER_RUN` | 每次最多回收的页数，默认 4096 |
+| `OCTOPUS_SQLITE_MAINTENANCE_MAX_DURATION_SECONDS` | 单次维护最长时间，默认 5 秒 |
+| `OCTOPUS_RELAY_MAX_LOGGED_CLIENT_REQUEST_BYTES` | relay 请求日志最大字节数，`0` 表示不截断，默认 524288 |
+| `OCTOPUS_RELAY_MAX_LOGGED_CLIENT_RESPONSE_BYTES` | relay 响应日志最大字节数，`0` 表示不截断，默认 1048576 |
 
 
 ## 📸 界面预览

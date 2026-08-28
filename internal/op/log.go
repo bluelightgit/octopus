@@ -4,9 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/bestruirui/octopus/internal/activity"
+	"github.com/bestruirui/octopus/internal/conf"
 	"github.com/bestruirui/octopus/internal/db"
 	"github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/utils/log"
@@ -26,6 +30,8 @@ var relayLogCache = make([]model.RelayLog, 0, relayLogMaxSize)
 var relayLogCacheLock sync.Mutex
 
 var relayLogFlushLock sync.Mutex
+
+var sqliteMaintenanceLock sync.Mutex
 
 var relayLogSubscribers = make(map[chan model.RelayLog]struct{})
 var relayLogSubscribersLock sync.RWMutex
@@ -155,6 +161,10 @@ func RelayLogSaveDBTask(ctx context.Context) error {
 	defer func() {
 		log.Debugf("relay log save db task finished, save time: %s", time.Since(startTime))
 	}()
+	return relayLogSaveDB(ctx)
+}
+
+func relayLogSaveDB(ctx context.Context) error {
 	enabled, err := SettingGetBool(model.SettingKeyRelayLogKeepEnabled)
 	if err != nil {
 		return err
@@ -167,10 +177,7 @@ func RelayLogSaveDBTask(ctx context.Context) error {
 		if err := relayLogCleanup(ctx); err != nil {
 			return err
 		}
-		if _, err := db.SQLiteWALCheckpointIfNeeded(ctx, db.SQLiteWALCheckpointTriggerSize); err != nil {
-			return err
-		}
-		return sqliteIncrementalVacuumIfNeeded(ctx)
+		return nil
 	}
 
 	// 如果未启用日志保存，检查缓存大小，如果超过限制则清理旧日志
@@ -182,6 +189,149 @@ func RelayLogSaveDBTask(ctx context.Context) error {
 	relayLogCacheLock.Unlock()
 
 	return nil
+}
+
+// SQLiteMaintenanceTask combines the regular relay-log flush/retention pass
+// with the SQLite-only compaction pass. Keeping this separate from the normal
+// log task means non-SQLite deployments retain their existing behavior, while
+// SQLite can use a configurable interval and idle-aware maintenance policy.
+func SQLiteMaintenanceTask(ctx context.Context) error {
+	if !db.IsSQLite() {
+		return nil
+	}
+
+	config := conf.AppConfig.SQLiteMaintenance.WithDefaults()
+	if !config.Enabled {
+		return relayLogSaveDB(ctx)
+	}
+
+	if err := relayLogSaveDB(ctx); err != nil {
+		return err
+	}
+
+	maintenanceCtx, cancel := context.WithTimeout(ctx, time.Duration(config.MaxDurationSeconds)*time.Second)
+	defer cancel()
+	return sqliteMaintenanceIfIdle(maintenanceCtx, config)
+}
+
+func sqliteMaintenanceIfIdle(ctx context.Context, config conf.SQLiteMaintenance) error {
+	active, lastActivity := activity.Snapshot()
+	if active > 0 || relayActivityTooRecent(lastActivity, config.IdleSeconds) {
+		log.Debugf("sqlite maintenance skipped: active_relay_requests=%d last_activity=%s", active, formatActivityTime(lastActivity))
+		return nil
+	}
+
+	release, ok := activity.TryBeginMaintenance()
+	if !ok {
+		log.Debugf("sqlite maintenance skipped: relay activity changed before maintenance started")
+		return nil
+	}
+	defer release()
+
+	// Recheck after taking the exclusive request-entry gate. This closes the
+	// race where a new relay request arrives between Snapshot and TryLock.
+	active, lastActivity = activity.Snapshot()
+	if active > 0 || relayActivityTooRecent(lastActivity, config.IdleSeconds) {
+		log.Debugf("sqlite maintenance skipped after recheck: active_relay_requests=%d last_activity=%s", active, formatActivityTime(lastActivity))
+		return nil
+	}
+
+	if !sqliteMaintenanceLock.TryLock() {
+		log.Debugf("sqlite maintenance skipped: another sqlite maintenance pass is running")
+		return nil
+	}
+	defer sqliteMaintenanceLock.Unlock()
+
+	if _, err := db.SQLiteWALCheckpointIfNeeded(ctx, config.WALCheckpointThresholdBytes); err != nil {
+		if isSQLiteBusyError(err) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			log.Debugf("sqlite maintenance skipped during wal checkpoint: %v", err)
+			return nil
+		}
+		return err
+	}
+
+	status, err := db.InspectSQLitePragmas(ctx)
+	if err != nil {
+		if isSQLiteBusyError(err) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			log.Debugf("sqlite maintenance skipped while inspecting database: %v", err)
+			return nil
+		}
+		return err
+	}
+	if status == nil || status.AutoVacuumNeedsVacuum {
+		if status != nil {
+			log.Warnf("sqlite maintenance skipped: auto_vacuum=%s requires one-time `octopus sqlite repair` while the service is stopped", status.AutoVacuumMode)
+		}
+		return nil
+	}
+	if config.MinDatabaseBytes > 0 && status.TotalSizeBytes < config.MinDatabaseBytes {
+		return nil
+	}
+	if status.FreelistCount <= 0 || status.ReclaimableBytes < config.MinReclaimableBytes {
+		return nil
+	}
+
+	beforeSize := status.TotalSizeBytes
+	beforeReclaimable := status.ReclaimableBytes
+	log.Debugf("sqlite incremental vacuum started: total_size_bytes=%d reclaimable_bytes=%d page_count=%d freelist_count=%d max_pages=%d", beforeSize, beforeReclaimable, status.PageCount, status.FreelistCount, config.MaxPagesPerRun)
+	if err := db.SQLiteIncrementalVacuum(ctx, config.MaxPagesPerRun); err != nil {
+		if isSQLiteBusyError(err) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			log.Debugf("sqlite incremental vacuum skipped: %v", err)
+			return nil
+		}
+		return err
+	}
+
+	// The vacuum itself writes pages and can create a new WAL segment. Try to
+	// truncate it immediately so the reported on-disk size reflects the pass.
+	if result, checkpointErr := db.SQLiteWALCheckpoint(ctx, db.SQLiteCheckpointModeTruncate); checkpointErr != nil {
+		if !isSQLiteBusyError(checkpointErr) && !errors.Is(checkpointErr, context.DeadlineExceeded) && !errors.Is(checkpointErr, context.Canceled) {
+			log.Warnf("sqlite maintenance post-vacuum checkpoint failed: %v", checkpointErr)
+		}
+	} else if result != nil && result.BusyFrames > 0 {
+		log.Debugf("sqlite maintenance post-vacuum checkpoint incomplete: busy=%d log=%d checkpointed=%d", result.BusyFrames, result.LogFrames, result.CheckpointedFrames)
+	}
+
+	after, inspectErr := db.InspectSQLitePragmas(ctx)
+	if inspectErr != nil {
+		if isSQLiteBusyError(inspectErr) || errors.Is(inspectErr, context.DeadlineExceeded) || errors.Is(inspectErr, context.Canceled) {
+			return nil
+		}
+		return inspectErr
+	}
+	if after != nil {
+		log.Infof("sqlite incremental vacuum finished: reclaimed_bytes=%d reclaimable_bytes=%d->%d total_size_bytes=%d->%d", maxInt64(0, beforeSize-after.TotalSizeBytes), beforeReclaimable, after.ReclaimableBytes, beforeSize, after.TotalSizeBytes)
+	}
+	return nil
+}
+
+func relayActivityTooRecent(lastActivity time.Time, idleSeconds int) bool {
+	if lastActivity.IsZero() || idleSeconds <= 0 {
+		return false
+	}
+	return time.Since(lastActivity) < time.Duration(idleSeconds)*time.Second
+}
+
+func formatActivityTime(t time.Time) string {
+	if t.IsZero() {
+		return "never"
+	}
+	return t.Format(time.RFC3339)
+}
+
+func isSQLiteBusyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "database is locked") || strings.Contains(message, "database is busy") || strings.Contains(message, "sqlite_busy")
+}
+
+func maxInt64(left, right int64) int64 {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func relayLogCleanup(ctx context.Context) error {

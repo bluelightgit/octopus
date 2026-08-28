@@ -123,6 +123,31 @@ The configuration file is located at `data/config.json` by default and is automa
 | `database.path` | Database connection string | `data/data.db` |
 | `log.level` | Log level | `info` |
 
+**SQLite Background Maintenance:**
+
+SQLite deployments enable a conservative background maintenance pass by default. It first applies the relay-log retention policy, then runs bounded incremental vacuum only when there are no active relay requests and the service has been idle for the configured period. Long-lived SSE relay requests therefore prevent compaction while they are active.
+
+The settings can be placed in `data/config.json`:
+
+```json
+{
+  "sqlite_maintenance": {
+    "enabled": true,
+    "interval_seconds": 600,
+    "idle_seconds": 300,
+    "min_database_bytes": 536870912,
+    "min_reclaimable_bytes": 67108864,
+    "wal_checkpoint_threshold_bytes": 67108864,
+    "max_pages_per_run": 4096,
+    "max_duration_seconds": 5
+  }
+}
+```
+
+Each setting can also be overridden with the corresponding environment variable, such as `OCTOPUS_SQLITE_MAINTENANCE_IDLE_SECONDS`. Set `min_database_bytes` to 0 to remove the total database-size gate; avoid setting `max_pages_per_run` or `max_duration_seconds` unnecessarily high.
+
+If the database still reports `auto_vacuum=none`, stop the service and run `octopus sqlite repair` once before relying on background incremental vacuum.
+
 **Database Configuration:**
 
 Three database types are supported:
@@ -174,6 +199,16 @@ All configuration options can be overridden via environment variables using the 
 | `OCTOPUS_RELAY_NON_STREAM_TIMEOUT_MS` | End-to-end timeout for non-stream relay requests (default: 300000ms) |
 | `OCTOPUS_RELAY_STREAM_IDLE_TIMEOUT_MS` | Idle timeout between upstream stream events (default: 90000ms) |
 | `OCTOPUS_RELAY_RESPONSES_PRELUDE_TIMEOUT_MS` | Fallback timeout for OpenAI Responses prelude-only passthrough streams when group first token timeout is disabled (default: 30000ms) |
+| `OCTOPUS_SQLITE_MAINTENANCE_ENABLED` | Enable SQLite background maintenance (default: `true`) |
+| `OCTOPUS_SQLITE_MAINTENANCE_INTERVAL_SECONDS` | SQLite maintenance interval (default: 600 seconds) |
+| `OCTOPUS_SQLITE_MAINTENANCE_IDLE_SECONDS` | Required idle time before maintenance (default: 300 seconds) |
+| `OCTOPUS_SQLITE_MAINTENANCE_MIN_DATABASE_BYTES` | Total database-size gate (default: 536870912 bytes) |
+| `OCTOPUS_SQLITE_MAINTENANCE_MIN_RECLAIMABLE_BYTES` | Reclaimable-space gate (default: 67108864 bytes) |
+| `OCTOPUS_SQLITE_MAINTENANCE_WAL_CHECKPOINT_THRESHOLD_BYTES` | WAL checkpoint threshold (default: 67108864 bytes) |
+| `OCTOPUS_SQLITE_MAINTENANCE_MAX_PAGES_PER_RUN` | Maximum pages reclaimed per pass (default: 4096) |
+| `OCTOPUS_SQLITE_MAINTENANCE_MAX_DURATION_SECONDS` | Maximum duration of one maintenance pass (default: 5 seconds) |
+| `OCTOPUS_RELAY_MAX_LOGGED_CLIENT_REQUEST_BYTES` | Maximum request-body bytes stored in relay logs; `0` means unlimited (default: 524288) |
+| `OCTOPUS_RELAY_MAX_LOGGED_CLIENT_RESPONSE_BYTES` | Maximum response-body bytes stored in relay logs; `0` means unlimited (default: 1048576) |
 
 ## 📸 Screenshots
 

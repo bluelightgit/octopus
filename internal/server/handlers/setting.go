@@ -57,9 +57,14 @@ type sqliteStatusResponse struct {
 	AutoVacuum            int    `json:"auto_vacuum,omitempty"`
 	AutoVacuumMode        string `json:"auto_vacuum_mode,omitempty"`
 	WALAutoCheckpoint     int    `json:"wal_auto_checkpoint,omitempty"`
+	PageSize              int    `json:"page_size,omitempty"`
 	PageCount             int    `json:"page_count,omitempty"`
 	FreelistCount         int    `json:"freelist_count,omitempty"`
+	DBSizeBytes           int64  `json:"db_size_bytes,omitempty"`
 	WALSizeBytes          int64  `json:"wal_size_bytes,omitempty"`
+	SHMSizeBytes          int64  `json:"shm_size_bytes,omitempty"`
+	TotalSizeBytes        int64  `json:"total_size_bytes,omitempty"`
+	ReclaimableBytes      int64  `json:"reclaimable_bytes,omitempty"`
 	AutoVacuumNeedsVacuum bool   `json:"auto_vacuum_needs_vacuum,omitempty"`
 }
 
@@ -141,9 +146,14 @@ func getSQLiteStatus(c *gin.Context) {
 		AutoVacuum:            status.AutoVacuum,
 		AutoVacuumMode:        status.AutoVacuumMode,
 		WALAutoCheckpoint:     status.WALAutoCheckpoint,
+		PageSize:              status.PageSize,
 		PageCount:             status.PageCount,
 		FreelistCount:         status.FreelistCount,
+		DBSizeBytes:           status.DBSizeBytes,
 		WALSizeBytes:          status.WALSizeBytes,
+		SHMSizeBytes:          status.SHMSizeBytes,
+		TotalSizeBytes:        status.TotalSizeBytes,
+		ReclaimableBytes:      status.ReclaimableBytes,
 		AutoVacuumNeedsVacuum: status.AutoVacuumNeedsVacuum,
 	})
 }
