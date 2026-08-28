@@ -50,9 +50,29 @@ export interface RelayLog {
     cost: number;                // 消耗费用
     request_content: string;     // 请求内容
     response_content: string;    // 响应内容
+    request_content_truncated?: boolean;
+    response_content_truncated?: boolean;
+    request_body_ref?: string;
+    response_body_ref?: string;
+    request_body_size?: number;
+    response_body_size?: number;
+    request_body_sha256?: string;
+    response_body_sha256?: string;
+    request_body_encoding?: string;
+    response_body_encoding?: string;
+    request_body_storage_error?: string;
+    response_body_storage_error?: string;
     error: string;               // 错误信息
     attempts?: ChannelAttempt[]; // 所有尝试记录
     total_attempts?: number;     // 总尝试次数
+}
+
+export type RelayLogBodyKind = 'request' | 'response';
+
+/** 获取日志正文的原始响应，服务端会在这里合并内联正文和外部正文文件。 */
+export function fetchRelayLogBody(id: number, kind: RelayLogBodyKind): Promise<Response> {
+    const params = new URLSearchParams({ kind });
+    return apiClient.raw(`/api/v1/log/${encodeURIComponent(String(id))}/body?${params.toString()}`);
 }
 
 /**

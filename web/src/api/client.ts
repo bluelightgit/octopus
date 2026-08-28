@@ -103,6 +103,47 @@ async function request<T>(
 }
 
 /**
+ * 发送需要保留原始响应体的请求（例如日志正文下载）。
+ * 普通 API 请求会自动解析 JSON，这里让调用方以 Blob/Text/流的方式读取成功响应。
+ */
+async function rawRequest(path: string, init: RequestInit = {}): Promise<Response> {
+    const headers = new Headers(init.headers);
+
+    if (typeof window !== 'undefined' && getAuthStore) {
+        const store = getAuthStore();
+        if (store.token) {
+            headers.set('Authorization', `Bearer ${store.token}`);
+        }
+    }
+
+    const response = await fetch(`${API_BASE_URL}${path}`, {
+        ...init,
+        headers,
+    });
+
+    if (!response.ok) {
+        const contentType = response.headers.get('content-type');
+        const isJson = contentType?.includes('application/json');
+        let data: unknown;
+        try {
+            data = isJson ? await response.json() : await response.text();
+        } catch {
+            data = undefined;
+        }
+        const error: ApiError = {
+            code: response.status,
+            message: (data && typeof data === 'object' && 'message' in data && typeof data.message === 'string')
+                ? data.message
+                : (typeof data === 'string' ? data : response.statusText),
+        };
+        handleError(error);
+        throw error;
+    }
+
+    return response;
+}
+
+/**
  * API 客户端 - 基础 HTTP 方法
  */
 export const apiClient = {
@@ -135,5 +176,7 @@ export const apiClient = {
      */
     patch: <T>(path: string, data?: unknown, params?: Record<string, string | number | boolean>): Promise<T> =>
         request<T>('PATCH', path, data ? JSON.stringify(data) : undefined, params),
-};
 
+    /** 获取成功响应的原始 Response，调用方负责读取和释放响应体。 */
+    raw: (path: string, init?: RequestInit): Promise<Response> => rawRequest(path, init),
+};

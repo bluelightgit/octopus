@@ -123,6 +123,28 @@ http://localhost:3000
 | `database.path` | 数据库连接地址 | `data/data.db` |
 | `log.level` | 日志级别 | `info` |
 
+**Relay 原始正文存储：**
+
+Relay 日志只保存客户端发送的原始请求体和最终返回给客户端的原始响应体，不保存协议转换过程中的中间格式。正文不超过 `inline_max_bytes` 时完整写入 SQLite；超过阈值时，SQLite 只保存前缀、大小、SHA-256 和引用，完整字节流以 gzip 文件保存到 `data/relay-bodies`。日志详情中的复制/下载按钮会通过鉴权接口读取完整正文。
+
+```json
+{
+  "relay_body_storage": {
+    "enabled": true,
+    "directory": "data/relay-bodies",
+    "inline_max_bytes": 1048576,
+    "preview_max_bytes": 262144,
+    "compression": "gzip"
+  }
+}
+```
+
+`directory` 必须位于持久化数据卷中。服务启动和日志保留清理时会删除未被数据库或内存日志引用的外部文件；因此备份日志时不能只备份 SQLite 文件。设置页面勾选“包含日志”和“包含日志完整正文”会下载包含 `database.json` 与外部正文文件的 ZIP 归档，导入时支持该 ZIP；仅下载 JSON 时仍保持原有逻辑备份格式。
+
+如需关闭外置正文存储，可设置 `relay_body_storage.enabled` 为 `false`。此时旧的 `OCTOPUS_RELAY_MAX_LOGGED_CLIENT_REQUEST_BYTES` 和 `OCTOPUS_RELAY_MAX_LOGGED_CLIENT_RESPONSE_BYTES` 限制仍用于兼容模式，超过限制的正文只能保留前缀。
+
+正文下载接口为 `GET /api/v1/log/:id/body?kind=request` 或 `kind=response`，需要管理端鉴权。
+
 **SQLite 后台维护：**
 
 SQLite 模式默认启用低负载后台维护。它会先按日志保留周期清理旧日志，然后仅在没有活跃 relay 请求且空闲达到指定时间时，分批执行增量 vacuum。SSE 等长连接仍处于 relay 请求期间时不会执行维护。
@@ -207,8 +229,13 @@ SQLite 模式默认启用低负载后台维护。它会先按日志保留周期�
 | `OCTOPUS_SQLITE_MAINTENANCE_WAL_CHECKPOINT_THRESHOLD_BYTES` | WAL checkpoint 门槛，默认 67108864 字节 |
 | `OCTOPUS_SQLITE_MAINTENANCE_MAX_PAGES_PER_RUN` | 每次最多回收的页数，默认 4096 |
 | `OCTOPUS_SQLITE_MAINTENANCE_MAX_DURATION_SECONDS` | 单次维护最长时间，默认 5 秒 |
-| `OCTOPUS_RELAY_MAX_LOGGED_CLIENT_REQUEST_BYTES` | relay 请求日志最大字节数，`0` 表示不截断，默认 524288 |
-| `OCTOPUS_RELAY_MAX_LOGGED_CLIENT_RESPONSE_BYTES` | relay 响应日志最大字节数，`0` 表示不截断，默认 1048576 |
+| `OCTOPUS_RELAY_BODY_STORAGE_ENABLED` | 是否启用外置原始正文存储，默认 `true` |
+| `OCTOPUS_RELAY_BODY_STORAGE_DIRECTORY` | 外置正文目录，默认 `data/relay-bodies` |
+| `OCTOPUS_RELAY_BODY_STORAGE_INLINE_MAX_BYTES` | 直接写入 SQLite 的正文上限，默认 1048576 |
+| `OCTOPUS_RELAY_BODY_STORAGE_PREVIEW_MAX_BYTES` | 超限正文在 SQLite 中保留的前缀大小，默认 262144 |
+| `OCTOPUS_RELAY_BODY_STORAGE_COMPRESSION` | 外置正文压缩方式：`gzip` 或 `none`，默认 `gzip` |
+| `OCTOPUS_RELAY_MAX_LOGGED_CLIENT_REQUEST_BYTES` | 仅在外置存储关闭时生效的兼容请求体上限，`0` 表示不截断 |
+| `OCTOPUS_RELAY_MAX_LOGGED_CLIENT_RESPONSE_BYTES` | 仅在外置存储关闭时生效的兼容响应体上限，`0` 表示不截断 |
 
 
 ## 📸 界面预览

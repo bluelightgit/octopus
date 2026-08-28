@@ -2,6 +2,41 @@ package conf
 
 import "testing"
 
+func TestRelayBodyStorageWithDefaults(t *testing.T) {
+	config := (RelayBodyStorage{}).WithDefaults()
+	if config.Enabled {
+		t.Fatal("WithDefaults must not silently enable a zero-value struct")
+	}
+	if config.Directory != DefaultRelayBodyStorageDirectory {
+		t.Fatalf("unexpected body directory: %q", config.Directory)
+	}
+	if config.InlineMaxBytes != DefaultRelayBodyStorageInlineMaxBytes {
+		t.Fatalf("unexpected inline limit: %d", config.InlineMaxBytes)
+	}
+	if config.PreviewMaxBytes != DefaultRelayBodyStoragePreviewMaxBytes {
+		t.Fatalf("unexpected preview limit: %d", config.PreviewMaxBytes)
+	}
+	if config.Compression != DefaultRelayBodyStorageCompression {
+		t.Fatalf("unexpected compression: %q", config.Compression)
+	}
+}
+
+func TestRelayBodyStorageWithDefaultsClampsPreview(t *testing.T) {
+	config := RelayBodyStorage{
+		Enabled:         true,
+		Directory:       "custom-bodies",
+		InlineMaxBytes:  100,
+		PreviewMaxBytes: 200,
+		Compression:     "none",
+	}.WithDefaults()
+	if !config.Enabled {
+		t.Fatal("explicitly enabled body storage must remain enabled")
+	}
+	if config.Directory != "custom-bodies" || config.InlineMaxBytes != 100 || config.PreviewMaxBytes != 100 || config.Compression != "none" {
+		t.Fatalf("explicit body storage configuration was changed: %+v", config)
+	}
+}
+
 func TestSQLiteMaintenanceWithDefaults(t *testing.T) {
 	config := SQLiteMaintenance{Enabled: true}.WithDefaults()
 	if !config.Enabled {

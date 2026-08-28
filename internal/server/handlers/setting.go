@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -195,6 +196,24 @@ func runSQLiteCheckpoint(c *gin.Context) {
 func exportDB(c *gin.Context) {
 	includeLogs, _ := strconv.ParseBool(c.DefaultQuery("include_logs", "false"))
 	includeStats, _ := strconv.ParseBool(c.DefaultQuery("include_stats", "false"))
+	includeBodyFiles, _ := strconv.ParseBool(c.DefaultQuery("include_body_files", "false"))
+
+	if includeLogs && includeBodyFiles {
+		c.Header("Content-Type", "application/zip")
+		c.Header("Content-Disposition", "attachment; filename=\"octopus-export-"+time.Now().Format("20060102150405")+".zip\"")
+		if err := op.DBExportArchive(c.Request.Context(), includeLogs, includeStats, true, c.Writer); err != nil {
+			// DBExportArchive validates referenced body files before writing the
+			// archive. Errors after streaming starts cannot be represented as a
+			// JSON response, but the connection will still be terminated.
+			if c.Writer.Written() {
+				c.Error(err)
+			} else {
+				c.Writer.Header().Del("Content-Disposition")
+				resp.Error(c, http.StatusInternalServerError, err.Error())
+			}
+		}
+		return
+	}
 
 	dump, err := op.DBExportAll(c.Request.Context(), includeLogs, includeStats)
 	if err != nil {
@@ -223,6 +242,18 @@ func importDB(c *gin.Context) {
 			return
 		}
 		defer f.Close()
+		if isDatabaseArchive(fh.Filename, contentType) {
+			result, err := op.DBImportArchive(c.Request.Context(), f, fh.Size)
+			if err != nil {
+				resp.Error(c, http.StatusBadRequest, err.Error())
+				return
+			}
+			_ = op.InitCache()
+			client.ReloadRuntimeSettings()
+			relay.ReloadRuntimeSettings()
+			resp.Success(c, result)
+			return
+		}
 		body, err := io.ReadAll(f)
 		if err != nil {
 			resp.Error(c, http.StatusBadRequest, err.Error())
@@ -255,6 +286,10 @@ func importDB(c *gin.Context) {
 	relay.ReloadRuntimeSettings()
 
 	resp.Success(c, result)
+}
+
+func isDatabaseArchive(filename, contentType string) bool {
+	return strings.EqualFold(filepath.Ext(filename), ".zip") || strings.Contains(strings.ToLower(contentType), "application/zip")
 }
 
 func decodeDBDump(body []byte, dump *model.DBDump) error {

@@ -2,13 +2,11 @@ package relay
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
-	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
 
+	"github.com/bestruirui/octopus/internal/body"
+	"github.com/bestruirui/octopus/internal/conf"
 	"github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/price"
@@ -24,10 +22,8 @@ const (
 )
 
 var (
-	// A value of zero means unlimited. The default remains bounded for
-	// compatibility; SQLite deployments that need the complete payload can set
-	// the corresponding OCTOPUS_RELAY_MAX_LOGGED_*_BYTES environment variable
-	// to 0.
+	// These legacy limits are consulted only when relay_body_storage.enabled is
+	// false. A value of zero means unlimited in that compatibility mode.
 	maxLoggedClientRequestBytes  = defaultMaxLoggedClientRequestBytes
 	maxLoggedClientResponseBytes = defaultMaxLoggedClientResponseBytes
 )
@@ -50,17 +46,13 @@ type RelayMetrics struct {
 	FailureStage           string
 	ExecutionTrace         []string
 
-	// 请求和响应内容
+	// 请求和响应内容。capture 只保留受限前缀；超过阈值的完整原文写入
+	// body storage，避免把大 body 再复制进日志字符串和 SQLite。
 	InternalRequest  *transformerModel.InternalLLMRequest
 	InternalResponse *transformerModel.InternalLLMResponse
 
-	// Client-facing request/response payloads (octopus external boundary).
-	// Stored as raw bytes to avoid coupling logs to internal message schemas.
-	ClientRequestBody  []byte
-	ClientResponseBody []byte
-
-	clientRequestTruncated  bool
-	clientResponseTruncated bool
+	requestBodyCapture  *body.Capture
+	responseBodyCapture *body.Capture
 
 	// 统计指标
 	ActualModel string
@@ -178,14 +170,24 @@ func (m *RelayMetrics) SetClientRequestBody(body []byte) {
 	if m == nil {
 		return
 	}
-	m.ClientRequestBody, m.clientRequestTruncated = cloneAndTruncate(body, maxLoggedClientRequestBytes)
+	if m.requestBodyCapture != nil {
+		m.requestBodyCapture.Discard()
+	}
+	capture := newRelayBodyCapture(maxLoggedClientRequestBytes)
+	_ = capture.Write(body)
+	m.requestBodyCapture = capture
 }
 
 func (m *RelayMetrics) SetClientResponseBody(body []byte) {
 	if m == nil {
 		return
 	}
-	m.ClientResponseBody, m.clientResponseTruncated = cloneAndTruncate(body, maxLoggedClientResponseBytes)
+	if m.responseBodyCapture != nil {
+		m.responseBodyCapture.Discard()
+	}
+	capture := newRelayBodyCapture(maxLoggedClientResponseBytes)
+	_ = capture.Write(body)
+	m.responseBodyCapture = capture
 }
 
 func (m *RelayMetrics) AppendClientResponseChunk(chunk []byte) {
@@ -195,60 +197,40 @@ func (m *RelayMetrics) AppendClientResponseChunk(chunk []byte) {
 	if len(chunk) == 0 {
 		return
 	}
-	if m.clientResponseTruncated {
-		return
+	if m.responseBodyCapture == nil {
+		m.responseBodyCapture = newRelayBodyCapture(maxLoggedClientResponseBytes)
 	}
-
-	remain := maxLoggedClientResponseBytes - len(m.ClientResponseBody)
-	if remain <= 0 {
-		m.clientResponseTruncated = true
-		return
-	}
-	if len(chunk) > remain {
-		m.ClientResponseBody = append(m.ClientResponseBody, chunk[:remain]...)
-		m.clientResponseTruncated = true
-		return
-	}
-	m.ClientResponseBody = append(m.ClientResponseBody, chunk...)
+	_ = m.responseBodyCapture.Write(chunk)
 }
 
-func cloneAndTruncate(body []byte, max int) ([]byte, bool) {
-	if len(body) == 0 {
-		return nil, false
+func newRelayBodyCapture(legacyInlineMax int) *body.Capture {
+	config := conf.AppConfig.RelayBodyStorage.WithDefaults()
+	inlineMax := config.InlineMaxBytes
+	previewMax := config.PreviewMaxBytes
+	if !config.Enabled {
+		// Preserve the old environment-variable behavior when the new external
+		// storage feature is explicitly disabled.
+		inlineMax = int64(legacyInlineMax)
+		previewMax = inlineMax
 	}
-	if max <= 0 || len(body) <= max {
-		b := make([]byte, len(body))
-		copy(b, body)
-		return b, false
-	}
-	b := make([]byte, max)
-	copy(b, body[:max])
-	return b, true
+	return body.NewCapture(body.Config{
+		Enabled:         config.Enabled,
+		Directory:       config.Directory,
+		InlineMaxBytes:  inlineMax,
+		PreviewMaxBytes: previewMax,
+		Compression:     config.Compression,
+	})
 }
 
-func encodeLogPayload(body []byte, truncated bool) string {
-	if len(body) == 0 {
-		return ""
+func finishRelayBodyCapture(capture *body.Capture, kind string) body.Artifact {
+	if capture == nil {
+		return body.Artifact{}
 	}
-
-	if utf8.Valid(body) {
-		if !truncated {
-			return string(body)
-		}
-		return string(body) + "\n\n[octopus log truncated]\n"
+	artifact, err := capture.Finish()
+	if err != nil {
+		log.Warnf("failed to store relay %s body externally: %v", kind, err)
 	}
-
-	payload := map[string]any{
-		"base64": base64.StdEncoding.EncodeToString(body),
-	}
-	if truncated {
-		payload["truncated"] = true
-	}
-	b, err := json.Marshal(payload)
-	if err == nil {
-		return string(b)
-	}
-	return fmt.Sprintf("{\"base64\":\"%s\",\"truncated\":%t}", base64.StdEncoding.EncodeToString(body), truncated)
+	return artifact
 }
 
 func (m *RelayMetrics) SetInternalResponse(resp *transformerModel.InternalLLMResponse, actualModel string) {
@@ -388,22 +370,31 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 		relayLog.Cost = m.Stats.InputCost + m.Stats.OutputCost
 	}
 
-	// 请求内容（优先 client 原始内容）
-	if len(m.ClientRequestBody) > 0 {
-		relayLog.RequestContent = encodeLogPayload(m.ClientRequestBody, m.clientRequestTruncated)
-	} else if m.InternalRequest != nil {
-		if reqJSON, jsonErr := json.Marshal(m.InternalRequest); jsonErr == nil {
-			relayLog.RequestContent = string(reqJSON)
+	// 请求内容（优先 client 原始内容）。大 body 的完整内容由 capture
+	// 外置，SQLite 中只保留精确前缀和可下载引用。
+	requestArtifact := finishRelayBodyCapture(m.requestBodyCapture, "request")
+	if requestArtifact.Size > 0 {
+		relayLog.RequestContent, relayLog.RequestBodyEncoding = body.EncodeInline(requestArtifact.Inline)
+		relayLog.RequestContentTruncated = requestArtifact.Truncated
+		relayLog.RequestBodyRef = requestArtifact.Ref
+		relayLog.RequestBodySize = requestArtifact.Size
+		relayLog.RequestBodySHA256 = requestArtifact.SHA256
+		if requestArtifact.StorageError != "" {
+			relayLog.RequestBodyStorageError = requestArtifact.StorageError
 		}
 	}
 
-	// 响应内容（优先 client 原始内容）
-	if len(m.ClientResponseBody) > 0 {
-		relayLog.ResponseContent = encodeLogPayload(m.ClientResponseBody, m.clientResponseTruncated)
-	} else if m.InternalResponse != nil {
-		respForLog := m.filterResponseForLog(m.InternalResponse)
-		if respJSON, jsonErr := json.Marshal(respForLog); jsonErr == nil {
-			relayLog.ResponseContent = string(respJSON)
+	// 响应内容（优先 client 原始内容）。这里保存的是最终客户端可见的
+	// 原始响应，不保存协议转换过程中的中间副本。
+	responseArtifact := finishRelayBodyCapture(m.responseBodyCapture, "response")
+	if responseArtifact.Size > 0 {
+		relayLog.ResponseContent, relayLog.ResponseBodyEncoding = body.EncodeInline(responseArtifact.Inline)
+		relayLog.ResponseContentTruncated = responseArtifact.Truncated
+		relayLog.ResponseBodyRef = responseArtifact.Ref
+		relayLog.ResponseBodySize = responseArtifact.Size
+		relayLog.ResponseBodySHA256 = responseArtifact.SHA256
+		if responseArtifact.StorageError != "" {
+			relayLog.ResponseBodyStorageError = responseArtifact.StorageError
 		}
 	}
 
@@ -415,48 +406,4 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 	if logErr := op.RelayLogAdd(ctx, relayLog); logErr != nil {
 		log.Warnf("failed to save relay log: %v", logErr)
 	}
-}
-
-// filterResponseForLog 创建响应的浅拷贝，过滤掉 images、MultipleContent 中的图片数据和 Audio.Data 以减少存储压力
-func (m *RelayMetrics) filterResponseForLog(resp *transformerModel.InternalLLMResponse) *transformerModel.InternalLLMResponse {
-	if resp == nil {
-		return nil
-	}
-
-	filterMsg := func(msg *transformerModel.Message) *transformerModel.Message {
-		if msg == nil {
-			return nil
-		}
-		c := *msg
-		c.Images = nil
-		if len(c.Content.MultipleContent) > 0 {
-			parts := make([]transformerModel.MessageContentPart, 0, len(c.Content.MultipleContent))
-			for _, p := range c.Content.MultipleContent {
-				if p.Type == "image_url" && p.ImageURL != nil {
-					parts = append(parts, transformerModel.MessageContentPart{
-						Type:     "image_url",
-						ImageURL: &transformerModel.ImageURL{URL: "[image data omitted for storage]"},
-					})
-				} else {
-					parts = append(parts, p)
-				}
-			}
-			c.Content = transformerModel.MessageContent{Content: c.Content.Content, MultipleContent: parts}
-		}
-		if c.Audio != nil && c.Audio.Data != "" {
-			a := *c.Audio
-			a.Data = "[audio data omitted for storage]"
-			c.Audio = &a
-		}
-		return &c
-	}
-
-	filtered := *resp
-	filtered.Choices = make([]transformerModel.Choice, len(resp.Choices))
-	for i, choice := range resp.Choices {
-		filtered.Choices[i] = choice
-		filtered.Choices[i].Message = filterMsg(choice.Message)
-		filtered.Choices[i].Delta = filterMsg(choice.Delta)
-	}
-	return &filtered
 }

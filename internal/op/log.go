@@ -187,6 +187,11 @@ func relayLogSaveDB(ctx context.Context) error {
 		relayLogCache = relayLogCache[len(relayLogCache)-keepSize:]
 	}
 	relayLogCacheLock.Unlock()
+	if removed, sweepErr := RelayLogBodySweep(ctx); sweepErr != nil {
+		log.Warnf("failed to sweep relay body storage with log persistence disabled: %v", sweepErr)
+	} else if removed > 0 {
+		log.Infof("removed %d unreferenced relay body files", removed)
+	}
 
 	return nil
 }
@@ -340,27 +345,30 @@ func relayLogCleanup(ctx context.Context) error {
 		return err
 	}
 
-	if keepPeriod <= 0 {
-		return nil
-	}
-
-	cutoffTime := time.Now().Add(-time.Duration(keepPeriod) * 24 * time.Hour).Unix()
 	dbConn := db.GetDB().WithContext(ctx)
-	for {
-		result := dbConn.Exec(`DELETE FROM relay_logs WHERE id IN (
-			SELECT id FROM relay_logs WHERE time < ? ORDER BY time ASC LIMIT ?
-		)`, cutoffTime, relayLogCleanupBatchSize)
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected < relayLogCleanupBatchSize {
-			break
+	if keepPeriod > 0 {
+		cutoffTime := time.Now().Add(-time.Duration(keepPeriod) * 24 * time.Hour).Unix()
+		for {
+			result := dbConn.Exec(`DELETE FROM relay_logs WHERE id IN (
+				SELECT id FROM relay_logs WHERE time < ? ORDER BY time ASC LIMIT ?
+			)`, cutoffTime, relayLogCleanupBatchSize)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected < relayLogCleanupBatchSize {
+				break
+			}
 		}
 	}
 	if db.IsSQLite() {
 		if err := dbConn.Exec("PRAGMA optimize;").Error; err != nil {
 			return err
 		}
+	}
+	if removed, sweepErr := RelayLogBodySweep(ctx); sweepErr != nil {
+		log.Warnf("failed to sweep relay body storage after log cleanup: %v", sweepErr)
+	} else if removed > 0 {
+		log.Infof("removed %d unreferenced relay body files", removed)
 	}
 	return nil
 }
@@ -469,6 +477,9 @@ func RelayLogList(ctx context.Context, startTime, endTime *int, page, pageSize i
 }
 
 func RelayLogClear(ctx context.Context) error {
+	relayLogFlushLock.Lock()
+	defer relayLogFlushLock.Unlock()
+
 	relayLogCacheLock.Lock()
 	relayLogCache = make([]model.RelayLog, 0, relayLogMaxSize)
 	relayLogCacheLock.Unlock()
@@ -478,5 +489,13 @@ func RelayLogClear(ctx context.Context) error {
 	if _, err := db.SQLiteWALCheckpoint(ctx, db.SQLiteCheckpointModeTruncate); err != nil {
 		return err
 	}
-	return sqliteIncrementalVacuumIfNeeded(ctx)
+	if err := sqliteIncrementalVacuumIfNeeded(ctx); err != nil {
+		return err
+	}
+	if removed, err := RelayLogBodySweep(ctx); err != nil {
+		log.Warnf("failed to sweep relay body storage after clearing logs: %v", err)
+	} else if removed > 0 {
+		log.Infof("removed %d relay body files after clearing logs", removed)
+	}
+	return nil
 }

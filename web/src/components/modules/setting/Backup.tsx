@@ -17,6 +17,7 @@ export function SettingBackup() {
 
     const [includeLogs, setIncludeLogs] = useState(false);
     const [includeStats, setIncludeStats] = useState(false);
+    const [includeBodyFiles, setIncludeBodyFiles] = useState(true);
 
     const [file, setFile] = useState<File | null>(null);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -50,7 +51,11 @@ export function SettingBackup() {
 
     const onExport = async () => {
         try {
-            await exportDB.mutateAsync({ include_logs: includeLogs, include_stats: includeStats });
+            await exportDB.mutateAsync({
+                include_logs: includeLogs,
+                include_stats: includeStats,
+                include_body_files: includeLogs && includeBodyFiles,
+            });
             toast.success(t('backup.export.success'));
         } catch (e) {
             toast.error(e instanceof Error ? e.message : t('backup.export.failed'));
@@ -78,6 +83,11 @@ export function SettingBackup() {
                     <Switch checked={includeStats} onCheckedChange={setIncludeStats} />
                 </div>
 
+                <div className="flex items-center justify-between gap-4">
+                    <div className="text-sm text-muted-foreground">{t('backup.export.includeBodyFiles')}</div>
+                    <Switch checked={includeBodyFiles} onCheckedChange={setIncludeBodyFiles} disabled={!includeLogs} />
+                </div>
+
                 <Button
                     type="button"
                     variant="outline"
@@ -86,7 +96,9 @@ export function SettingBackup() {
                     disabled={exportDB.isPending}
                 >
                     <Download className="size-4" />
-                    {exportDB.isPending ? t('backup.export.exporting') : t('backup.export.button')}
+                    {exportDB.isPending
+                        ? t('backup.export.exporting')
+                        : includeLogs && includeBodyFiles ? t('backup.export.archiveButton') : t('backup.export.button')}
                 </Button>
             </div>
 
@@ -99,7 +111,7 @@ export function SettingBackup() {
                 <Input
                     ref={fileInputRef}
                     type="file"
-                    accept="application/json,.json"
+                    accept="application/json,application/zip,.json,.zip"
                     onChange={(e) => onPickFile(e.target.files?.[0] ?? null)}
                     className="rounded-xl"
                 />
@@ -132,5 +144,4 @@ export function SettingBackup() {
         </div>
     );
 }
-
 

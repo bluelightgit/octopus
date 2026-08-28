@@ -43,6 +43,11 @@ var startCmd = &cobra.Command{
 			log.Errorf("cache init error: %v", err)
 			return
 		}
+		if removed, err := op.RelayLogBodySweep(cmd.Context()); err != nil {
+			log.Warnf("relay body storage sweep failed: %v", err)
+		} else if removed > 0 {
+			log.Infof("removed %d unreferenced relay body files at startup", removed)
+		}
 		client.ReloadRuntimeSettings()
 		relay.ReloadRuntimeSettings()
 		shutdown.Register(op.SaveCache)

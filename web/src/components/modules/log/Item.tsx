@@ -1,18 +1,20 @@
 'use client';
 
 import { useMemo, useState, useEffect } from 'react';
-import { Clock, Cpu, Zap, AlertCircle, ArrowDownToLine, ArrowUpFromLine, DollarSign, ArrowRight, ArrowDown, Send, MessageSquare, Loader2, RotateCw, ChevronDown, ChevronUp, Pin, KeyRound } from 'lucide-react';
+import { Check, Clock, Copy, Cpu, Zap, AlertCircle, ArrowDownToLine, ArrowUpFromLine, Download, DollarSign, ArrowRight, ArrowDown, Send, MessageSquare, Loader2, RotateCw, ChevronDown, ChevronUp, Pin, KeyRound } from 'lucide-react';
+import { useCopyToClipboard } from '@uidotdev/usehooks';
 import { useTranslations } from 'next-intl';
 import { motion, AnimatePresence } from 'motion/react';
 import JsonView from '@uiw/react-json-view';
 import { githubDarkTheme } from '@uiw/react-json-view/githubDark';
 import { githubLightTheme } from '@uiw/react-json-view/githubLight';
 import { useTheme } from 'next-themes';
-import { type RelayLog, type ChannelAttempt } from '@/api/endpoints/log';
+import { fetchRelayLogBody, type RelayLog, type RelayLogBodyKind, type ChannelAttempt } from '@/api/endpoints/log';
 import { getModelIcon } from '@/lib/model-icons';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { CopyIconButton } from '@/components/common/CopyButton';
+import { toast } from '@/components/common/Toast';
 import {
     MorphingDialog,
     MorphingDialogTrigger,
@@ -104,7 +106,108 @@ function RetryBadgeWithTooltip({ channelName, brandColor, attempts }: RetryBadge
     );
 }
 
-function DeferredJsonContent({ content, fallbackText }: { content: string | undefined; fallbackText: string }) {
+function RelayBodyActions({
+    log,
+    kind,
+}: {
+    log: RelayLog;
+    kind: RelayLogBodyKind;
+}) {
+    const t = useTranslations('log.card');
+    const [isBusy, setIsBusy] = useState(false);
+    const [copied, setCopied] = useState(false);
+    const [, copyToClipboard] = useCopyToClipboard();
+
+    const content = kind === 'request' ? log.request_content : log.response_content;
+    const size = kind === 'request' ? log.request_body_size : log.response_body_size;
+    const available = Boolean(content) || Boolean(size && size > 0);
+
+    const handleCopy = async (event: React.MouseEvent<HTMLButtonElement>) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!available) {
+            toast.error(t('bodyUnavailable'));
+            return;
+        }
+
+        setIsBusy(true);
+        try {
+            const response = await fetchRelayLogBody(log.id, kind);
+            const text = await response.text();
+            await copyToClipboard(text);
+            setCopied(true);
+            toast.success(t('copyBodySuccess'));
+            window.setTimeout(() => setCopied(false), 2000);
+        } catch (error) {
+            toast.error(t('bodyOperationFailed'), {
+                description: error instanceof Error ? error.message : String(error),
+            });
+        } finally {
+            setIsBusy(false);
+        }
+    };
+
+    const handleDownload = async (event: React.MouseEvent<HTMLButtonElement>) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!available) {
+            toast.error(t('bodyUnavailable'));
+            return;
+        }
+
+        setIsBusy(true);
+        try {
+            const response = await fetchRelayLogBody(log.id, kind);
+            const blob = await response.blob();
+            const disposition = response.headers.get('content-disposition');
+            const filename = disposition?.match(/filename="([^"]+)"/i)?.[1]
+                ?? `octopus-log-${log.id}-${kind}.body`;
+            const url = URL.createObjectURL(blob);
+            const anchor = document.createElement('a');
+            anchor.href = url;
+            anchor.download = filename;
+            document.body.appendChild(anchor);
+            anchor.click();
+            anchor.remove();
+            URL.revokeObjectURL(url);
+        } catch (error) {
+            toast.error(t('bodyOperationFailed'), {
+                description: error instanceof Error ? error.message : String(error),
+            });
+        } finally {
+            setIsBusy(false);
+        }
+    };
+
+    const buttonClass = "inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-background hover:text-foreground disabled:pointer-events-none disabled:opacity-40";
+
+    return (
+        <div className="flex items-center gap-0.5">
+            <button
+                type="button"
+                onClick={handleCopy}
+                disabled={isBusy || !available}
+                aria-label={t('copyBody')}
+                title={t('copyBody')}
+                className={buttonClass}
+            >
+                {isBusy ? <Loader2 className="size-3.5 animate-spin" /> : copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+            </button>
+            <button
+                type="button"
+                onClick={handleDownload}
+                disabled={isBusy || !available}
+                aria-label={t('downloadBody')}
+                title={t('downloadBody')}
+                className={buttonClass}
+            >
+                {isBusy ? <Loader2 className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}
+            </button>
+        </div>
+    );
+}
+
+function DeferredJsonContent({ content, fallbackText, truncated = false }: { content: string | undefined; fallbackText: string; truncated?: boolean }) {
     const { resolvedTheme } = useTheme();
     const { isOpen } = useMorphingDialog();
     const [shouldRender, setShouldRender] = useState(false);
@@ -151,7 +254,7 @@ function DeferredJsonContent({ content, fallbackText }: { content: string | unde
                 >
                     <Loader2 className="h-5 w-5 text-muted-foreground animate-spin" />
                 </motion.div>
-            ) : parsed.isJson ? (
+            ) : parsed.isJson && !truncated ? (
                 <motion.div
                     key="json"
                     initial={{ opacity: 0 }}
@@ -532,24 +635,58 @@ export function LogCard({ log }: { log: RelayLog }) {
                                             <div className="flex items-center gap-2 px-3 md:px-4 py-2.5 md:py-3 border-b border-border bg-muted/50 shrink-0">
                                                 <Send className="size-4 text-green-500" />
                                                 <span className="text-sm font-medium text-card-foreground">{t('requestContent')}</span>
-                                                <Badge variant="secondary" className="ml-auto text-xs">
-                                                    {log.input_tokens.toLocaleString()} {t('tokens')}
-                                                </Badge>
+                                                <div className="ml-auto flex items-center gap-1">
+                                                    {(log.request_content_truncated || log.request_body_ref) && (
+                                                        <Badge variant="outline" className="text-[10px] text-amber-600 dark:text-amber-400">
+                                                            {t('bodyPreviewOnly')}
+                                                        </Badge>
+                                                    )}
+                                                    {log.request_body_storage_error && (
+                                                        <Badge variant="destructive" className="text-[10px]">
+                                                            {t('bodyStorageError')}
+                                                        </Badge>
+                                                    )}
+                                                    <RelayBodyActions log={log} kind="request" />
+                                                    <Badge variant="secondary" className="text-xs">
+                                                        {log.input_tokens.toLocaleString()} {t('tokens')}
+                                                    </Badge>
+                                                </div>
                                             </div>
                                             <div className="flex-1 overflow-auto min-h-0">
-                                                <DeferredJsonContent content={log.request_content} fallbackText={t('noRequestContent')} />
+                                                <DeferredJsonContent
+                                                    content={log.request_content}
+                                                    fallbackText={t('noRequestContent')}
+                                                    truncated={!!log.request_content_truncated || !!log.request_body_ref}
+                                                />
                                             </div>
                                         </div>
                                         <div className="flex flex-col rounded-2xl border border-border bg-muted/30 overflow-hidden min-h-0">
                                             <div className="flex items-center gap-2 px-3 md:px-4 py-2.5 md:py-3 border-b border-border bg-muted/50 shrink-0">
                                                 <MessageSquare className="size-4 text-purple-500" />
                                                 <span className="text-sm font-medium text-card-foreground">{t('responseContent')}</span>
-                                                <Badge variant="secondary" className="ml-auto text-xs">
-                                                    {log.output_tokens.toLocaleString()} {t('tokens')}
-                                                </Badge>
+                                                <div className="ml-auto flex items-center gap-1">
+                                                    {(log.response_content_truncated || log.response_body_ref) && (
+                                                        <Badge variant="outline" className="text-[10px] text-amber-600 dark:text-amber-400">
+                                                            {t('bodyPreviewOnly')}
+                                                        </Badge>
+                                                    )}
+                                                    {log.response_body_storage_error && (
+                                                        <Badge variant="destructive" className="text-[10px]">
+                                                            {t('bodyStorageError')}
+                                                        </Badge>
+                                                    )}
+                                                    <RelayBodyActions log={log} kind="response" />
+                                                    <Badge variant="secondary" className="text-xs">
+                                                        {log.output_tokens.toLocaleString()} {t('tokens')}
+                                                    </Badge>
+                                                </div>
                                             </div>
                                             <div className="flex-1 overflow-auto min-h-0">
-                                                <DeferredJsonContent content={log.response_content} fallbackText={t('noResponseContent')} />
+                                                <DeferredJsonContent
+                                                    content={log.response_content}
+                                                    fallbackText={t('noResponseContent')}
+                                                    truncated={!!log.response_content_truncated || !!log.response_body_ref}
+                                                />
                                             </div>
                                         </div>
                                     </div>

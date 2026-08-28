@@ -123,6 +123,28 @@ The configuration file is located at `data/config.json` by default and is automa
 | `database.path` | Database connection string | `data/data.db` |
 | `log.level` | Log level | `info` |
 
+**Relay Original Body Storage:**
+
+Relay logs retain the original request body sent by the client and the final response body visible to the client. Intermediate protocol-converted payloads are not stored. Bodies at or below `inline_max_bytes` are stored inline in SQLite; larger bodies keep only a bounded prefix, size, SHA-256, and a reference in SQLite, while the complete byte stream is stored as a gzip file under `data/relay-bodies`. The copy/download buttons in the log details use an authenticated endpoint to read the complete body.
+
+```json
+{
+  "relay_body_storage": {
+    "enabled": true,
+    "directory": "data/relay-bodies",
+    "inline_max_bytes": 1048576,
+    "preview_max_bytes": 262144,
+    "compression": "gzip"
+  }
+}
+```
+
+`directory` must be on a persistent data volume. Startup and relay-log retention cleanup remove external files that are no longer referenced by the database or in-memory log tail, so backing up only the SQLite file is not sufficient for full log restoration. In the Settings page, enable “Include Logs” and “Include Full Log Bodies” to download a ZIP archive containing `database.json` and the external body artifacts; the importer accepts this ZIP. JSON export remains available as the logical database-only format.
+
+Set `relay_body_storage.enabled` to `false` to disable external body files. In that compatibility mode, the legacy `OCTOPUS_RELAY_MAX_LOGGED_CLIENT_REQUEST_BYTES` and `OCTOPUS_RELAY_MAX_LOGGED_CLIENT_RESPONSE_BYTES` limits are used and oversized bodies retain only their prefixes.
+
+The body download endpoint is `GET /api/v1/log/:id/body?kind=request` or `kind=response` and requires admin authentication.
+
 **SQLite Background Maintenance:**
 
 SQLite deployments enable a conservative background maintenance pass by default. It first applies the relay-log retention policy, then runs bounded incremental vacuum only when there are no active relay requests and the service has been idle for the configured period. Long-lived SSE relay requests therefore prevent compaction while they are active.
@@ -207,8 +229,13 @@ All configuration options can be overridden via environment variables using the 
 | `OCTOPUS_SQLITE_MAINTENANCE_WAL_CHECKPOINT_THRESHOLD_BYTES` | WAL checkpoint threshold (default: 67108864 bytes) |
 | `OCTOPUS_SQLITE_MAINTENANCE_MAX_PAGES_PER_RUN` | Maximum pages reclaimed per pass (default: 4096) |
 | `OCTOPUS_SQLITE_MAINTENANCE_MAX_DURATION_SECONDS` | Maximum duration of one maintenance pass (default: 5 seconds) |
-| `OCTOPUS_RELAY_MAX_LOGGED_CLIENT_REQUEST_BYTES` | Maximum request-body bytes stored in relay logs; `0` means unlimited (default: 524288) |
-| `OCTOPUS_RELAY_MAX_LOGGED_CLIENT_RESPONSE_BYTES` | Maximum response-body bytes stored in relay logs; `0` means unlimited (default: 1048576) |
+| `OCTOPUS_RELAY_BODY_STORAGE_ENABLED` | Enable external original-body storage (default: `true`) |
+| `OCTOPUS_RELAY_BODY_STORAGE_DIRECTORY` | External body directory (default: `data/relay-bodies`) |
+| `OCTOPUS_RELAY_BODY_STORAGE_INLINE_MAX_BYTES` | Maximum body size stored inline in SQLite (default: 1048576) |
+| `OCTOPUS_RELAY_BODY_STORAGE_PREVIEW_MAX_BYTES` | Prefix retained in SQLite for oversized bodies (default: 262144) |
+| `OCTOPUS_RELAY_BODY_STORAGE_COMPRESSION` | External body compression: `gzip` or `none` (default: `gzip`) |
+| `OCTOPUS_RELAY_MAX_LOGGED_CLIENT_REQUEST_BYTES` | Legacy request-body limit used only when external storage is disabled; `0` means unlimited |
+| `OCTOPUS_RELAY_MAX_LOGGED_CLIENT_RESPONSE_BYTES` | Legacy response-body limit used only when external storage is disabled; `0` means unlimited |
 
 ## 📸 Screenshots
 

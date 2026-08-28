@@ -23,6 +23,43 @@ type Database struct {
 	Path string `mapstructure:"path"`
 }
 
+// RelayBodyStorage controls retention of the original client-facing request
+// and response bodies. Small bodies remain inline in relay_logs; larger bodies
+// keep a bounded preview in SQLite and store the complete bytes externally.
+type RelayBodyStorage struct {
+	Enabled         bool   `mapstructure:"enabled"`
+	Directory       string `mapstructure:"directory"`
+	InlineMaxBytes  int64  `mapstructure:"inline_max_bytes"`
+	PreviewMaxBytes int64  `mapstructure:"preview_max_bytes"`
+	Compression     string `mapstructure:"compression"`
+}
+
+const (
+	DefaultRelayBodyStorageDirectory       = "data/relay-bodies"
+	DefaultRelayBodyStorageInlineMaxBytes  = 1 << 20
+	DefaultRelayBodyStoragePreviewMaxBytes = 256 << 10
+	DefaultRelayBodyStorageCompression     = "gzip"
+)
+
+func (s RelayBodyStorage) WithDefaults() RelayBodyStorage {
+	if s.Directory == "" {
+		s.Directory = DefaultRelayBodyStorageDirectory
+	}
+	if s.InlineMaxBytes <= 0 {
+		s.InlineMaxBytes = DefaultRelayBodyStorageInlineMaxBytes
+	}
+	if s.PreviewMaxBytes <= 0 {
+		s.PreviewMaxBytes = DefaultRelayBodyStoragePreviewMaxBytes
+	}
+	if s.PreviewMaxBytes > s.InlineMaxBytes {
+		s.PreviewMaxBytes = s.InlineMaxBytes
+	}
+	if s.Compression == "" {
+		s.Compression = DefaultRelayBodyStorageCompression
+	}
+	return s
+}
+
 // SQLiteMaintenance controls the optional background maintenance pass used by
 // SQLite deployments. The values are deliberately expressed in primitive
 // units so they can be configured from both config.json and environment
@@ -84,6 +121,7 @@ type Config struct {
 	Log               Log               `mapstructure:"log"`
 	Database          Database          `mapstructure:"database"`
 	SQLiteMaintenance SQLiteMaintenance `mapstructure:"sqlite_maintenance"`
+	RelayBodyStorage  RelayBodyStorage  `mapstructure:"relay_body_storage"`
 }
 
 var AppConfig Config
@@ -131,6 +169,11 @@ func setDefaults() {
 	viper.SetDefault("database.type", "sqlite")
 	viper.SetDefault("database.path", "data/data.db")
 	viper.SetDefault("log.level", "info")
+	viper.SetDefault("relay_body_storage.enabled", true)
+	viper.SetDefault("relay_body_storage.directory", DefaultRelayBodyStorageDirectory)
+	viper.SetDefault("relay_body_storage.inline_max_bytes", DefaultRelayBodyStorageInlineMaxBytes)
+	viper.SetDefault("relay_body_storage.preview_max_bytes", DefaultRelayBodyStoragePreviewMaxBytes)
+	viper.SetDefault("relay_body_storage.compression", DefaultRelayBodyStorageCompression)
 	viper.SetDefault("sqlite_maintenance.enabled", true)
 	viper.SetDefault("sqlite_maintenance.interval_seconds", DefaultSQLiteMaintenanceIntervalSeconds)
 	viper.SetDefault("sqlite_maintenance.idle_seconds", DefaultSQLiteMaintenanceIdleSeconds)

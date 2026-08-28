@@ -139,6 +139,7 @@ export interface DBImportResult {
 export interface DBExportOptions {
     include_logs?: boolean;
     include_stats?: boolean;
+    include_body_files?: boolean;
 }
 
 type ApiResponse<T> = {
@@ -205,6 +206,7 @@ export function useExportDB() {
             const params = new URLSearchParams();
             params.set('include_logs', String(!!options.include_logs));
             params.set('include_stats', String(!!options.include_stats));
+            params.set('include_body_files', String(!!options.include_body_files));
 
             const res = await fetch(`${API_BASE_URL}/api/v1/setting/export?${params.toString()}`, {
                 method: 'GET',

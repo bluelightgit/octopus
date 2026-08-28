@@ -2,9 +2,11 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/bestruirui/octopus/internal/op"
 	"github.com/bestruirui/octopus/internal/server/middleware"
@@ -27,6 +29,10 @@ func init() {
 		AddRoute(
 			router.NewRoute("/stream-token", http.MethodGet).
 				Handle(getStreamToken),
+		).
+		AddRoute(
+			router.NewRoute("/:id/body", http.MethodGet).
+				Handle(downloadLogBody),
 		)
 
 	router.NewGroupRouter("/api/v1/log").
@@ -89,6 +95,67 @@ func getStreamToken(c *gin.Context) {
 		return
 	}
 	resp.Success(c, gin.H{"token": token})
+}
+
+func downloadLogBody(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		resp.Error(c, http.StatusBadRequest, "invalid relay log id")
+		return
+	}
+
+	kind := strings.ToLower(strings.TrimSpace(c.Query("kind")))
+	if kind != "request" && kind != "response" {
+		resp.Error(c, http.StatusBadRequest, "body kind must be request or response")
+		return
+	}
+
+	reader, relayLog, err := op.RelayLogBodyOpen(c.Request.Context(), id, kind)
+	if err != nil {
+		status := http.StatusInternalServerError
+		message := "failed to open relay log body"
+		switch {
+		case errors.Is(err, op.ErrRelayLogNotFound), errors.Is(err, op.ErrRelayLogBodyNotFound):
+			status = http.StatusNotFound
+			message = "relay log body not found"
+		case errors.Is(err, op.ErrRelayLogBodyKind):
+			status = http.StatusBadRequest
+			message = err.Error()
+		}
+		resp.Error(c, status, message)
+		return
+	}
+	defer reader.Close()
+
+	var size int64
+	var sha256 string
+	var encoding string
+	var ref string
+	if kind == "request" {
+		size = relayLog.RequestBodySize
+		sha256 = relayLog.RequestBodySHA256
+		encoding = relayLog.RequestBodyEncoding
+		ref = relayLog.RequestBodyRef
+	} else {
+		size = relayLog.ResponseBodySize
+		sha256 = relayLog.ResponseBodySHA256
+		encoding = relayLog.ResponseBodyEncoding
+		ref = relayLog.ResponseBodyRef
+	}
+	if size <= 0 {
+		size = -1
+	}
+
+	contentType := "application/octet-stream"
+	if ref == "" && encoding == "utf8" {
+		contentType = "text/plain; charset=utf-8"
+	}
+	c.Header("Cache-Control", "no-store")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"octopus-log-%d-%s.body\"", id, kind))
+	if sha256 != "" {
+		c.Header("X-Content-SHA256", sha256)
+	}
+	c.DataFromReader(http.StatusOK, size, contentType, reader, nil)
 }
 
 func streamLog(c *gin.Context) {
