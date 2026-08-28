@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/helper"
-	"github.com/bestruirui/octopus/internal/op"
-	"github.com/bestruirui/octopus/internal/utils/log"
+	"github.com/bluelightgit/octopus/internal/helper"
+	"github.com/bluelightgit/octopus/internal/op"
+	"github.com/bluelightgit/octopus/internal/utils/log"
 )
 
 func ChannelBaseUrlDelayTask() {

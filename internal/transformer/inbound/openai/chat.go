@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/bestruirui/octopus/internal/transformer/model"
+	"github.com/bluelightgit/octopus/internal/transformer/model"
 )
 
 type ChatInbound struct {

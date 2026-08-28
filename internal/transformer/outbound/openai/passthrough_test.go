@@ -6,8 +6,8 @@ import (
 	"io"
 	"testing"
 
-	inboundopenai "github.com/bestruirui/octopus/internal/transformer/inbound/openai"
-	"github.com/bestruirui/octopus/internal/transformer/model"
+	inboundopenai "github.com/bluelightgit/octopus/internal/transformer/inbound/openai"
+	"github.com/bluelightgit/octopus/internal/transformer/model"
 )
 
 func TestRewriteChatCompletionsRequestBody_PreservesUnknownFieldsAndForcesUsage(t *testing.T) {

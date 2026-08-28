@@ -3,9 +3,9 @@ package cmd
 import (
 	"context"
 
-	"github.com/bestruirui/octopus/internal/conf"
-	internaldb "github.com/bestruirui/octopus/internal/db"
-	"github.com/bestruirui/octopus/internal/utils/log"
+	"github.com/bluelightgit/octopus/internal/conf"
+	internaldb "github.com/bluelightgit/octopus/internal/db"
+	"github.com/bluelightgit/octopus/internal/utils/log"
 	"github.com/spf13/cobra"
 )
 

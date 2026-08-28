@@ -8,10 +8,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/bestruirui/octopus/internal/op"
-	"github.com/bestruirui/octopus/internal/server/middleware"
-	"github.com/bestruirui/octopus/internal/server/resp"
-	"github.com/bestruirui/octopus/internal/server/router"
+	"github.com/bluelightgit/octopus/internal/op"
+	"github.com/bluelightgit/octopus/internal/server/middleware"
+	"github.com/bluelightgit/octopus/internal/server/resp"
+	"github.com/bluelightgit/octopus/internal/server/router"
 	"github.com/gin-gonic/gin"
 )
 

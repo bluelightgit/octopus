@@ -9,12 +9,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/activity"
-	"github.com/bestruirui/octopus/internal/conf"
-	"github.com/bestruirui/octopus/internal/db"
-	"github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/utils/log"
-	"github.com/bestruirui/octopus/internal/utils/snowflake"
+	"github.com/bluelightgit/octopus/internal/activity"
+	"github.com/bluelightgit/octopus/internal/conf"
+	"github.com/bluelightgit/octopus/internal/db"
+	"github.com/bluelightgit/octopus/internal/model"
+	"github.com/bluelightgit/octopus/internal/utils/log"
+	"github.com/bluelightgit/octopus/internal/utils/snowflake"
 )
 
 const relayLogMaxSize = 20

@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/bestruirui/octopus/internal/body"
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/bluelightgit/octopus/internal/body"
+	"github.com/bluelightgit/octopus/internal/model"
 )
 
 const relayBodyArchivePrefix = "relay-bodies/"

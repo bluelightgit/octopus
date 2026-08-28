@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/bestruirui/octopus/internal/conf"
-	_ "github.com/bestruirui/octopus/internal/server/handlers"
-	"github.com/bestruirui/octopus/internal/server/middleware"
-	"github.com/bestruirui/octopus/internal/server/resp"
-	"github.com/bestruirui/octopus/internal/server/router"
-	"github.com/bestruirui/octopus/internal/utils/log"
-	"github.com/bestruirui/octopus/static"
+	"github.com/bluelightgit/octopus/internal/conf"
+	_ "github.com/bluelightgit/octopus/internal/server/handlers"
+	"github.com/bluelightgit/octopus/internal/server/middleware"
+	"github.com/bluelightgit/octopus/internal/server/resp"
+	"github.com/bluelightgit/octopus/internal/server/router"
+	"github.com/bluelightgit/octopus/internal/utils/log"
+	"github.com/bluelightgit/octopus/static"
 	"github.com/gin-gonic/gin"
 )
 

@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/bestruirui/octopus/internal/utils/log"
+	"github.com/bluelightgit/octopus/internal/utils/log"
 	"gorm.io/gorm"
 )
 

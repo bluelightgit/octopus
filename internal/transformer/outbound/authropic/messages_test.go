@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/transformer/model"
+	"github.com/bluelightgit/octopus/internal/transformer/model"
 )
 
 func TestConvertToAnthropicRequest_PreservesDeveloperAndNamedToolChoice(t *testing.T) {

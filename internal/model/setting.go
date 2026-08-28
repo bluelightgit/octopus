@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/bestruirui/octopus/internal/conf"
+	"github.com/bluelightgit/octopus/internal/conf"
 )
 
 type SettingKey string

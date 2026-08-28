@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/conf"
-	"github.com/bestruirui/octopus/internal/db"
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/bluelightgit/octopus/internal/conf"
+	"github.com/bluelightgit/octopus/internal/db"
+	"github.com/bluelightgit/octopus/internal/model"
 )
 
 func TestSQLiteMaintenanceReclaimsBoundedPagesWhenIdle(t *testing.T) {

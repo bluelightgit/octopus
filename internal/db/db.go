@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/db/migrate"
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/bluelightgit/octopus/internal/db/migrate"
+	"github.com/bluelightgit/octopus/internal/model"
 	"github.com/glebarez/sqlite"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"

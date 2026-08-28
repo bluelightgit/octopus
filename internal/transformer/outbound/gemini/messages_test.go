@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	transformermodel "github.com/bestruirui/octopus/internal/transformer/model"
+	transformermodel "github.com/bluelightgit/octopus/internal/transformer/model"
 )
 
 func TestBuildGeminiResponseSchema_DirectJSONSchema(t *testing.T) {

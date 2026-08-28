@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/transformer/model"
+	"github.com/bluelightgit/octopus/internal/transformer/model"
 )
 
 func TestValidateRequestCompatibility_AnthropicRejectsStructuredOutputs(t *testing.T) {

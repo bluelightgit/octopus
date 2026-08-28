@@ -10,6 +10,7 @@
 
 </div>
 
+本项目是 Octopus 源项目的 fork。相较于源项目，增加了低负载时的 SQLite 自动维护，以及超大 Relay 请求/响应原文的外置无损存储、鉴权下载/复制和 ZIP 备份支持。
 
 ## ✨ 特性
 
@@ -32,20 +33,20 @@
 直接运行
 
 ```bash
-docker run -d --name octopus -v /path/to/data:/app/data -p 8080:8080 bestrui/octopus
+docker run -d --name octopus -v /path/to/data:/app/data -p 8080:8080 ghcr.io/bluelightgit/octopus:latest
 ```
 
 或者使用 docker compose 运行
 
 ```bash
-wget https://raw.githubusercontent.com/bestruirui/octopus/refs/heads/dev/docker-compose.yml
+wget https://raw.githubusercontent.com/bluelightgit/octopus/refs/heads/dev/docker-compose.yml
 docker compose up -d
 ```
 
 
 ### 📦 从 Release 下载
 
-从 [Releases](https://github.com/bestruirui/octopus/releases) 下载对应平台的二进制文件，然后运行：
+从 [Releases](https://github.com/bluelightgit/octopus/releases) 下载对应平台的二进制文件，然后运行：
 
 ```bash
 ./octopus start
@@ -60,7 +61,7 @@ docker compose up -d
 
 ```bash
 # 克隆项目
-git clone https://github.com/bestruirui/octopus.git
+git clone https://github.com/bluelightgit/octopus.git
 cd octopus
 # 构建前端
 cd web && pnpm install && pnpm run build && cd ..

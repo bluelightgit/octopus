@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/db"
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/op"
-	"github.com/bestruirui/octopus/internal/transformer/inbound"
-	"github.com/bestruirui/octopus/internal/transformer/outbound"
+	"github.com/bluelightgit/octopus/internal/db"
+	dbmodel "github.com/bluelightgit/octopus/internal/model"
+	"github.com/bluelightgit/octopus/internal/op"
+	"github.com/bluelightgit/octopus/internal/transformer/inbound"
+	"github.com/bluelightgit/octopus/internal/transformer/outbound"
 	"github.com/gin-gonic/gin"
 )
 

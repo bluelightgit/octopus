@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/transformer/outbound"
+	"github.com/bluelightgit/octopus/internal/model"
+	"github.com/bluelightgit/octopus/internal/transformer/outbound"
 	"github.com/dlclark/regexp2"
 )
 

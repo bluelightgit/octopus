@@ -6,11 +6,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/conf"
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/op"
-	"github.com/bestruirui/octopus/internal/relay/balancer"
-	"github.com/bestruirui/octopus/internal/transformer/model"
+	"github.com/bluelightgit/octopus/internal/conf"
+	dbmodel "github.com/bluelightgit/octopus/internal/model"
+	"github.com/bluelightgit/octopus/internal/op"
+	"github.com/bluelightgit/octopus/internal/relay/balancer"
+	"github.com/bluelightgit/octopus/internal/transformer/model"
 	"github.com/gin-gonic/gin"
 )
 

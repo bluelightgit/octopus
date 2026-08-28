@@ -38,7 +38,7 @@ PRESETS_GO_TEMPLATE = '''package price
 import (
 	"sync"
 
-	"github.com/bestruirui/octopus/internal/model"
+	"github.com/bluelightgit/octopus/internal/model"
 )
 
 var llmPriceLock sync.RWMutex
@@ -207,4 +207,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

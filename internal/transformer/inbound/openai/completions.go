@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/transformer/model"
+	"github.com/bluelightgit/octopus/internal/transformer/model"
 )
 
 // CompletionsInbound implements an OpenAI Completions-compatible inbound adapter.

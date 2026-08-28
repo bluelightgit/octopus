@@ -5,13 +5,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/body"
-	"github.com/bestruirui/octopus/internal/conf"
-	"github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/op"
-	"github.com/bestruirui/octopus/internal/price"
-	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
-	"github.com/bestruirui/octopus/internal/utils/log"
+	"github.com/bluelightgit/octopus/internal/body"
+	"github.com/bluelightgit/octopus/internal/conf"
+	"github.com/bluelightgit/octopus/internal/model"
+	"github.com/bluelightgit/octopus/internal/op"
+	"github.com/bluelightgit/octopus/internal/price"
+	transformerModel "github.com/bluelightgit/octopus/internal/transformer/model"
+	"github.com/bluelightgit/octopus/internal/utils/log"
 )
 
 const (

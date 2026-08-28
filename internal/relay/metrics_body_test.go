@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/bestruirui/octopus/internal/body"
-	"github.com/bestruirui/octopus/internal/conf"
+	"github.com/bluelightgit/octopus/internal/body"
+	"github.com/bluelightgit/octopus/internal/conf"
 )
 
 func TestRelayBodyCaptureUsesBoundedPreviewAndExternalOriginal(t *testing.T) {

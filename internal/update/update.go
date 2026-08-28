@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/client"
-	"github.com/bestruirui/octopus/internal/conf"
-	"github.com/bestruirui/octopus/internal/utils/log"
+	"github.com/bluelightgit/octopus/internal/client"
+	"github.com/bluelightgit/octopus/internal/conf"
+	"github.com/bluelightgit/octopus/internal/utils/log"
 )
 
 const (

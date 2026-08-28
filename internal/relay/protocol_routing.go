@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"strings"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/op"
-	"github.com/bestruirui/octopus/internal/transformer/model"
-	"github.com/bestruirui/octopus/internal/transformer/outbound"
+	dbmodel "github.com/bluelightgit/octopus/internal/model"
+	"github.com/bluelightgit/octopus/internal/op"
+	"github.com/bluelightgit/octopus/internal/transformer/model"
+	"github.com/bluelightgit/octopus/internal/transformer/outbound"
 )
 
 type protocolRoutePlan struct {

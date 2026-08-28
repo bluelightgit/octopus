@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	dbmodel "github.com/bestruirui/octopus/internal/model"
-	transformerModel "github.com/bestruirui/octopus/internal/transformer/model"
+	dbmodel "github.com/bluelightgit/octopus/internal/model"
+	transformerModel "github.com/bluelightgit/octopus/internal/transformer/model"
 )
 
 const minResponsesAffinityTTL = 24 * time.Hour

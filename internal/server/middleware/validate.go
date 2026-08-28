@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/bestruirui/octopus/internal/server/resp"
+	"github.com/bluelightgit/octopus/internal/server/resp"
 	"github.com/gin-gonic/gin"
 )
 

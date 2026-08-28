@@ -1,15 +1,15 @@
 package cmd
 
 import (
-	"github.com/bestruirui/octopus/internal/client"
-	"github.com/bestruirui/octopus/internal/conf"
-	"github.com/bestruirui/octopus/internal/db"
-	"github.com/bestruirui/octopus/internal/op"
-	"github.com/bestruirui/octopus/internal/relay"
-	"github.com/bestruirui/octopus/internal/server"
-	"github.com/bestruirui/octopus/internal/task"
-	"github.com/bestruirui/octopus/internal/utils/log"
-	"github.com/bestruirui/octopus/internal/utils/shutdown"
+	"github.com/bluelightgit/octopus/internal/client"
+	"github.com/bluelightgit/octopus/internal/conf"
+	"github.com/bluelightgit/octopus/internal/db"
+	"github.com/bluelightgit/octopus/internal/op"
+	"github.com/bluelightgit/octopus/internal/relay"
+	"github.com/bluelightgit/octopus/internal/server"
+	"github.com/bluelightgit/octopus/internal/task"
+	"github.com/bluelightgit/octopus/internal/utils/log"
+	"github.com/bluelightgit/octopus/internal/utils/shutdown"
 	"github.com/spf13/cobra"
 )
 

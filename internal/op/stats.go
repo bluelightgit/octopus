@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bestruirui/octopus/internal/db"
-	"github.com/bestruirui/octopus/internal/model"
-	"github.com/bestruirui/octopus/internal/utils/cache"
-	"github.com/bestruirui/octopus/internal/utils/log"
+	"github.com/bluelightgit/octopus/internal/db"
+	"github.com/bluelightgit/octopus/internal/model"
+	"github.com/bluelightgit/octopus/internal/utils/cache"
+	"github.com/bluelightgit/octopus/internal/utils/log"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )

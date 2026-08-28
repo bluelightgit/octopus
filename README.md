@@ -10,6 +10,7 @@
 
 </div>
 
+This repository is a fork of the upstream Octopus project. Compared with upstream, it adds idle-aware SQLite maintenance and external lossless storage for oversized relay request/response bodies, with authenticated download/copy and ZIP backup support.
 
 ## ✨ Features
 
@@ -32,20 +33,20 @@
 Run directly:
 
 ```bash
-docker run -d --name octopus -v /path/to/data:/app/data -p 8080:8080 bestrui/octopus
+docker run -d --name octopus -v /path/to/data:/app/data -p 8080:8080 ghcr.io/bluelightgit/octopus:latest
 ```
 
 Or use docker compose:
 
 ```bash
-wget https://raw.githubusercontent.com/bestruirui/octopus/refs/heads/dev/docker-compose.yml
+wget https://raw.githubusercontent.com/bluelightgit/octopus/refs/heads/dev/docker-compose.yml
 docker compose up -d
 ```
 
 
 ### 📦 Download from Release
 
-Download the binary for your platform from [Releases](https://github.com/bestruirui/octopus/releases), then run:
+Download the binary for your platform from [Releases](https://github.com/bluelightgit/octopus/releases), then run:
 
 ```bash
 ./octopus start
@@ -60,7 +61,7 @@ Download the binary for your platform from [Releases](https://github.com/bestrui
 
 ```bash
 # Clone the repository
-git clone https://github.com/bestruirui/octopus.git
+git clone https://github.com/bluelightgit/octopus.git
 cd octopus
 # Build frontend
 cd web && pnpm install && pnpm run build && cd ..

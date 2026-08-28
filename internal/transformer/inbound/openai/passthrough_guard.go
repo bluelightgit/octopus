@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/bestruirui/octopus/internal/transformer/model"
+	"github.com/bluelightgit/octopus/internal/transformer/model"
 )
 
 func requiresOpenAISameProtocolPassthrough(raw map[string]json.RawMessage, format model.APIFormat) bool {
