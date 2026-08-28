@@ -176,9 +176,12 @@ func SQLiteWALCheckpointIfNeeded(ctx context.Context, thresholdBytes int64) (*SQ
 	return result, nil
 }
 
-// SQLiteIncrementalVacuum reclaims at most maxPages free pages. Keeping the
-// amount bounded makes it safe to invoke from a background maintenance task;
-// the next pass can continue where this one stopped.
+// SQLiteIncrementalVacuum reclaims at most maxPages free pages. Some SQLite
+// builds can advance only one tail page per PRAGMA invocation even when the
+// requested limit is larger, so repeat the bounded operation while tracking
+// the actual page-count reduction. Keeping the total bounded makes it safe to
+// invoke from a background maintenance task; the next pass can continue where
+// this one stopped.
 func SQLiteIncrementalVacuum(ctx context.Context, maxPages int) error {
 	if !IsSQLite() {
 		return nil
@@ -186,7 +189,36 @@ func SQLiteIncrementalVacuum(ctx context.Context, maxPages int) error {
 	if maxPages <= 0 {
 		return fmt.Errorf("sqlite incremental vacuum max pages must be positive")
 	}
-	return GetDB().WithContext(ctx).Exec(fmt.Sprintf("PRAGMA incremental_vacuum(%d);", maxPages)).Error
+
+	dbConn := GetDB().WithContext(ctx)
+	remaining := maxPages
+	for remaining > 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		before, err := querySQLiteIntPragma(dbConn, "page_count")
+		if err != nil {
+			return err
+		}
+		if err := dbConn.Exec(fmt.Sprintf("PRAGMA incremental_vacuum(%d);", remaining)).Error; err != nil {
+			return err
+		}
+
+		after, err := querySQLiteIntPragma(dbConn, "page_count")
+		if err != nil {
+			return err
+		}
+		reclaimed := before - after
+		if reclaimed <= 0 {
+			return nil
+		}
+		if reclaimed >= remaining {
+			return nil
+		}
+		remaining -= reclaimed
+	}
+	return nil
 }
 
 func RepairSQLiteAutoVacuum(ctx context.Context) (*SQLitePragmaStatus, error) {
