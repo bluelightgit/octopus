@@ -146,11 +146,31 @@ def generate_entry(model_id: str, cost: dict) -> str:
     return f'\t"{model_id}": {{Input: {input_price}, Output: {output_price}, CacheRead: {cache_read}, CacheWrite: {cache_write}}},'
 
 
+def add_entry(entries: dict[str, str], model_id: str, cost: dict, source: str) -> bool:
+    """添加一个模型价格，避免不同供应商的同名模型生成重复 Go key。"""
+    normalized_id = model_id.lower()
+    if not normalized_id:
+        return False
+
+    entry = generate_entry(normalized_id, cost)
+    existing_entry = entries.get(normalized_id)
+    if existing_entry is not None:
+        if existing_entry != entry:
+            print(
+                f"  Warning: duplicate model id '{normalized_id}' from {source}; "
+                "keeping the first price"
+            )
+        return False
+
+    entries[normalized_id] = entry
+    return True
+
+
 def main():
     print(f"Fetching price data from {LLM_PRICE_URL}...")
     raw_price = fetch_price_data()
     
-    entries = []
+    entries: dict[str, str] = {}
     model_count = 0
     
     for provider in PROVIDERS:
@@ -169,8 +189,8 @@ def main():
                 continue
             
             # 添加原始模型
-            entries.append(generate_entry(model_id, cost))
-            provider_count += 1
+            if add_entry(entries, model_id, cost, provider):
+                provider_count += 1
             
             # 收集所有别名
             aliases = []
@@ -183,9 +203,9 @@ def main():
                 aliases.extend(MODEL_ALIASES[model_id])
             
             # 添加别名 (去重)
-            for alias in set(aliases):
-                entries.append(generate_entry(alias.lower(), cost))
-                provider_count += 1
+            for alias in dict.fromkeys(aliases):
+                if add_entry(entries, alias, cost, f"{provider}:{model_id} alias"):
+                    provider_count += 1
             
         print(f"  {provider}: {provider_count} models")
         model_count += provider_count
@@ -194,7 +214,7 @@ def main():
     update_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     content = PRESETS_GO_TEMPLATE.format(
         update_time=update_time,
-        entries="\n".join(entries),
+        entries="\n".join(entries.values()),
     )
     
     # 写入文件
