@@ -414,13 +414,16 @@
             "matchRegexInvalid": "正規無效",
             "firstTokenTimeOut": "首字逾時",
             "firstTokenTimeOutHint": "單位秒，僅串流響應起效，0 表示不限制",
-            "sessionKeepTime": "會話保持",
-            "sessionKeepTimeHint": "單位秒，會話期間保持使用同一供應源，0 表示停用",
+            "sessionKeepTime": "親和保持時長",
+            "sessionKeepTimeHint": "單位秒，用於路由親和記錄的保留時長；0 表示不保留歷史親和記錄。",
             "preferredProtocolFamily": "協議類型",
+            "preferredProtocolFamilyHint": "優先選擇能原生處理目前請求協議的供應源。Auto 由路由器自行判斷，手動指定則會盡量偏向對應協議族。",
             "protocolRoutingMode": "路由策略",
             "protocolRoutingHint": "優先走與客戶端相同協議的直通鏈路；若沒有同協議供應源，再按路由策略決定是否允許跨協議轉換。",
-            "responsesStatefulRouting": "Responses 路由親和",
-            "responsesStatefulRoutingHint": "僅對 OpenAI Responses 請求生效。Auto 會在存在會話狀態時把重試與續接固定到同一路由，Strict 從首輪開始綁定，Off 則關閉這層保護。",
+            "routeAffinityMode": "路由親和",
+            "routeAffinityModeHint": "統一控制同一對話優先命中原路由的策略。Auto 會盡量復用歷史路由，Strict 會在識別到已綁定路由後禁止跨路由重試，Off 則完全關閉。不同協議內部採用各自的狀態識別方式。",
+            "responsesWebsocketEnabled": "啟用 Responses WebSocket",
+            "responsesWebsocketEnabledHint": "僅對 OpenAI Responses 分組生效。開啟後允許客戶端透過 GET /v1/responses WebSocket 連入該分組。",
             "items": "已選模型",
             "addItem": "新增模型",
             "autoAdd": "自動新增",
@@ -441,7 +444,7 @@
             "anthropicMessages": "Anthropic Messages",
             "geminiContents": "Gemini Contents"
         },
-        "responsesStatefulRouting": {
+        "routeAffinityMode": {
             "off": "關閉",
             "auto": "自動",
             "strict": "嚴格"
@@ -597,6 +600,8 @@
             "channelProxyPlaceholder": "可選：僅對該供應源生效（覆蓋全域代理）",
             "paramOverride": "參數覆蓋",
             "paramOverridePlaceholder": "可選：JSON 字串，用於覆蓋請求參數",
+            "responsesWebsocketMaxLifetime": "Responses WS 連線時長(秒)",
+            "responsesWebsocketMaxLifetimeHint": "僅對 OpenAI Responses 供應源生效。用於控制網關主動關閉該上游 WebSocket 的最長連線時長，預設 3600 秒。",
             "model": "模型",
             "enabled": "啟用",
             "proxy": "使用代理",

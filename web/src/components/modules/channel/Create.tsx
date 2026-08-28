@@ -26,6 +26,7 @@ export function CreateDialogContent() {
         auto_group: AutoGroupType.None,
         enabled: true,
         proxy: false,
+        responses_websocket_max_lifetime_sec: 3600,
         match_regex: '',
     });
     const t = useTranslations('channel.create');
@@ -60,6 +61,7 @@ export function CreateDialogContent() {
                 custom_header: normalizedHeaders,
                 channel_proxy: channelProxy,
                 param_override: paramOverride,
+                responses_websocket_max_lifetime_sec: formData.responses_websocket_max_lifetime_sec,
                 match_regex: formData.match_regex.trim(),
             },
             {
@@ -78,6 +80,7 @@ export function CreateDialogContent() {
                         auto_group: AutoGroupType.None,
                         enabled: true,
                         proxy: false,
+                        responses_websocket_max_lifetime_sec: 3600,
                         match_regex: '',
                     });
                     setIsOpen(false);

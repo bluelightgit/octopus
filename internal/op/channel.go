@@ -26,6 +26,9 @@ func ChannelList(ctx context.Context) ([]model.Channel, error) {
 }
 
 func ChannelCreate(channel *model.Channel, ctx context.Context) error {
+	if channel != nil {
+		channel.ResponsesWebsocketMaxLifetimeSec = model.NormalizeResponsesWebsocketMaxLifetimeSec(channel.ResponsesWebsocketMaxLifetimeSec)
+	}
 	if err := db.GetDB().WithContext(ctx).Create(channel).Error; err != nil {
 		return err
 	}
@@ -172,6 +175,10 @@ func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model
 	if req.ParamOverride != nil {
 		selectFields = append(selectFields, "param_override")
 		updates.ParamOverride = req.ParamOverride
+	}
+	if req.ResponsesWebsocketMaxLifetimeSec != nil {
+		selectFields = append(selectFields, "responses_websocket_max_lifetime_sec")
+		updates.ResponsesWebsocketMaxLifetimeSec = model.NormalizeResponsesWebsocketMaxLifetimeSec(*req.ResponsesWebsocketMaxLifetimeSec)
 	}
 	if req.MatchRegex != nil {
 		selectFields = append(selectFields, "match_regex")

@@ -31,12 +31,35 @@ func isValidGroupProtocolRoutingMode(v model.GroupProtocolRoutingMode) bool {
 	}
 }
 
-func isValidResponsesStatefulRoutingMode(v model.GroupResponsesStatefulRoutingMode) bool {
+func isValidGroupRouteAffinityMode(v model.GroupRouteAffinityMode) bool {
 	switch v {
-	case "", model.GroupResponsesStatefulRoutingModeOff, model.GroupResponsesStatefulRoutingModeAuto, model.GroupResponsesStatefulRoutingModeStrict:
+	case "", model.GroupRouteAffinityModeOff, model.GroupRouteAffinityModeAuto, model.GroupRouteAffinityModeStrict:
 		return true
 	default:
 		return false
+	}
+}
+
+func normalizeResponsesWebsocketEnabled(group *model.Group) {
+	if group == nil {
+		return
+	}
+	if group.GetPreferredProtocolFamily() != model.GroupProtocolFamilyOpenAIResponses {
+		group.ResponsesWebsocketEnabled = false
+	}
+}
+
+func normalizeResponsesWebsocketEnabledUpdate(req *model.GroupUpdateRequest, current model.Group) {
+	if req == nil {
+		return
+	}
+	nextPreferredProtocolFamily := current.GetPreferredProtocolFamily()
+	if req.PreferredProtocolFamily != nil {
+		nextPreferredProtocolFamily = *req.PreferredProtocolFamily
+	}
+	if nextPreferredProtocolFamily != model.GroupProtocolFamilyOpenAIResponses {
+		disabled := false
+		req.ResponsesWebsocketEnabled = &disabled
 	}
 }
 
@@ -89,10 +112,11 @@ func createGroup(c *gin.Context) {
 		resp.Error(c, http.StatusBadRequest, "invalid protocol_routing_mode")
 		return
 	}
-	if !isValidResponsesStatefulRoutingMode(group.ResponsesStatefulRouting) {
-		resp.Error(c, http.StatusBadRequest, "invalid responses_stateful_routing")
+	if !isValidGroupRouteAffinityMode(model.ResolveGroupRouteAffinityMode(group.RouteAffinityMode, group.ResponsesStatefulRouting)) {
+		resp.Error(c, http.StatusBadRequest, "invalid route_affinity_mode")
 		return
 	}
+	normalizeResponsesWebsocketEnabled(&group)
 	if group.MatchRegex != "" {
 		_, err := regexp2.Compile(group.MatchRegex, regexp2.ECMAScript)
 		if err != nil {
@@ -121,7 +145,11 @@ func updateGroup(c *gin.Context) {
 		resp.Error(c, http.StatusBadRequest, "invalid protocol_routing_mode")
 		return
 	}
-	if req.ResponsesStatefulRouting != nil && !isValidResponsesStatefulRoutingMode(*req.ResponsesStatefulRouting) {
+	if req.RouteAffinityMode != nil && !isValidGroupRouteAffinityMode(*req.RouteAffinityMode) {
+		resp.Error(c, http.StatusBadRequest, "invalid route_affinity_mode")
+		return
+	}
+	if req.ResponsesStatefulRouting != nil && !isValidGroupRouteAffinityMode(model.GroupRouteAffinityMode(*req.ResponsesStatefulRouting)) {
 		resp.Error(c, http.StatusBadRequest, "invalid responses_stateful_routing")
 		return
 	}
@@ -132,6 +160,12 @@ func updateGroup(c *gin.Context) {
 			return
 		}
 	}
+	currentGroup, err := op.GroupGet(req.ID, c.Request.Context())
+	if err != nil {
+		resp.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	normalizeResponsesWebsocketEnabledUpdate(&req, *currentGroup)
 	group, err := op.GroupUpdate(&req, c.Request.Context())
 	if err != nil {
 		resp.Error(c, http.StatusInternalServerError, err.Error())

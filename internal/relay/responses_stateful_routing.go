@@ -15,19 +15,12 @@ import (
 
 const minResponsesAffinityTTL = 24 * time.Hour
 
-type responsesAffinityRoute struct {
-	ChannelID    int
-	ChannelKeyID int
-	BaseURL      string
-	Timestamp    time.Time
-}
-
 type responsesStatefulRequestContext struct {
 	Mode                 dbmodel.GroupResponsesStatefulRoutingMode
 	LookupKeys           []string
 	ObservedLookupKeys   []string
 	SelectedLookupKey    string
-	PinnedRoute          *responsesAffinityRoute
+	PinnedRoute          *affinityRoute
 	HasContinuationState bool
 	mu                   sync.Mutex
 }
@@ -323,7 +316,7 @@ func responsesAffinityStoreKey(apiKeyID int, affinityKey string) string {
 	return fmt.Sprintf("api_key=%d|%s", apiKeyID, strings.TrimSpace(affinityKey))
 }
 
-func getResponsesAffinityRoute(apiKeyID int, lookupKeys []string, ttl time.Duration) (*responsesAffinityRoute, string) {
+func getResponsesAffinityRoute(apiKeyID int, lookupKeys []string, ttl time.Duration) (*affinityRoute, string) {
 	for _, lookupKey := range lookupKeys {
 		if strings.TrimSpace(lookupKey) == "" {
 			continue
@@ -333,7 +326,7 @@ func getResponsesAffinityRoute(apiKeyID int, lookupKeys []string, ttl time.Durat
 		if !ok {
 			continue
 		}
-		route, ok := v.(*responsesAffinityRoute)
+		route, ok := v.(*affinityRoute)
 		if !ok || route == nil {
 			responsesAffinityStore.Delete(storeKey)
 			continue
@@ -348,55 +341,18 @@ func getResponsesAffinityRoute(apiKeyID int, lookupKeys []string, ttl time.Durat
 	return nil, ""
 }
 
-func rememberResponsesAffinityRoute(apiKeyID int, lookupKeys []string, route responsesAffinityRoute) {
+func rememberResponsesAffinityRoute(apiKeyID int, lookupKeys []string, route affinityRoute) {
 	if apiKeyID <= 0 {
 		return
 	}
 	route.BaseURL = normalizeAffinityBaseURL(route.BaseURL)
 	route.Timestamp = time.Now()
 	for _, lookupKey := range compactStrings(lookupKeys) {
-		responsesAffinityStore.Store(responsesAffinityStoreKey(apiKeyID, lookupKey), &responsesAffinityRoute{
+		responsesAffinityStore.Store(responsesAffinityStoreKey(apiKeyID, lookupKey), &affinityRoute{
 			ChannelID:    route.ChannelID,
 			ChannelKeyID: route.ChannelKeyID,
 			BaseURL:      route.BaseURL,
 			Timestamp:    route.Timestamp,
 		})
 	}
-}
-
-func normalizeAffinityBaseURL(baseURL string) string {
-	return strings.TrimRight(strings.TrimSpace(baseURL), "/")
-}
-
-func findPinnedBaseURL(channel *dbmodel.Channel, expected string) (string, bool) {
-	if channel == nil {
-		return "", false
-	}
-	expected = normalizeAffinityBaseURL(expected)
-	if expected == "" {
-		return "", false
-	}
-	for _, item := range channel.BaseUrls {
-		if normalizeAffinityBaseURL(item.URL) == expected {
-			return item.URL, true
-		}
-	}
-	return "", false
-}
-
-func findPinnedChannelKey(channel *dbmodel.Channel, keyID int) (dbmodel.ChannelKey, bool) {
-	if channel == nil || keyID <= 0 {
-		return dbmodel.ChannelKey{}, false
-	}
-	nowSec := time.Now().Unix()
-	for _, item := range channel.Keys {
-		if item.ID != keyID || !item.Enabled || item.ChannelKey == "" {
-			continue
-		}
-		if item.StatusCode == 429 && item.LastUseTimeStamp > 0 && nowSec-item.LastUseTimeStamp < int64(5*time.Minute/time.Second) {
-			return dbmodel.ChannelKey{}, false
-		}
-		return item, true
-	}
-	return dbmodel.ChannelKey{}, false
 }
