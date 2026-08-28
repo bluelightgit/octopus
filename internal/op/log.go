@@ -340,6 +340,9 @@ func maxInt64(left, right int64) int64 {
 }
 
 func relayLogCleanup(ctx context.Context) error {
+	relayLogFlushLock.Lock()
+	defer relayLogFlushLock.Unlock()
+
 	keepPeriod, err := SettingGetInt(model.SettingKeyRelayLogKeepPeriod)
 	if err != nil {
 		return err
