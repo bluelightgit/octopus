@@ -43,6 +43,10 @@ func init() {
 				Handle(updateLLMPrice),
 		).
 		AddRoute(
+			router.NewRoute("/rebuild-price", http.MethodPost).
+				Handle(rebuildLLMPrice),
+		).
+		AddRoute(
 			router.NewRoute("/last-update-time", http.MethodGet).
 				Handle(getLastUpdateTime),
 		)
@@ -130,6 +134,11 @@ func createLLM(c *gin.Context) {
 		resp.Error(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	model.Name = strings.ToLower(strings.TrimSpace(model.Name))
+	if model.Name == "" {
+		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidParam)
+		return
+	}
 	if err := op.LLMCreate(model, c.Request.Context()); err != nil {
 		resp.Error(c, http.StatusInternalServerError, err.Error())
 		return
@@ -141,6 +150,11 @@ func updateLLM(c *gin.Context) {
 	var model model.LLMInfo
 	if err := c.ShouldBindJSON(&model); err != nil {
 		resp.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	model.Name = strings.ToLower(strings.TrimSpace(model.Name))
+	if model.Name == "" {
+		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidParam)
 		return
 	}
 	if err := op.LLMUpdate(model, c.Request.Context()); err != nil {
@@ -158,6 +172,11 @@ func deleteLLM(c *gin.Context) {
 		resp.Error(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	req.Name = strings.ToLower(strings.TrimSpace(req.Name))
+	if req.Name == "" {
+		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidParam)
+		return
+	}
 	if err := op.LLMDelete(req.Name, c.Request.Context()); err != nil {
 		resp.Error(c, http.StatusInternalServerError, err.Error())
 		return
@@ -172,6 +191,33 @@ func updateLLMPrice(c *gin.Context) {
 		return
 	}
 	resp.Success(c, nil)
+}
+
+// rebuildLLMPrice removes unreferenced price rows and rematches the remaining
+// models against the current catalog. This intentionally resets manual prices.
+func rebuildLLMPrice(c *gin.Context) {
+	ctx := c.Request.Context()
+	if err := op.LLMCleanupGhosts(ctx); err != nil {
+		resp.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	llmInfos, err := op.LLMList(ctx)
+	if err != nil {
+		resp.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	for i := range llmInfos {
+		llmInfos[i].LLMPrice = model.LLMPrice{}
+		if catalogPrice := price.GetCatalogLLMPrice(llmInfos[i].Name); catalogPrice != nil {
+			llmInfos[i].LLMPrice = *catalogPrice
+		}
+	}
+	if err := op.LLMBatchSave(llmInfos, ctx); err != nil {
+		resp.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	resp.Success(c, gin.H{"count": len(llmInfos)})
 }
 
 func getLastUpdateTime(c *gin.Context) {

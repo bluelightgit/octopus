@@ -1,8 +1,10 @@
 package model
 
 import (
+	"strings"
 	"time"
 
+	transformerModel "github.com/bluelightgit/octopus/internal/transformer/model"
 	"github.com/bluelightgit/octopus/internal/transformer/outbound"
 )
 
@@ -18,23 +20,24 @@ const (
 const DefaultResponsesWebsocketMaxLifetimeSec = 60 * 60
 
 type Channel struct {
-	ID                               int                   `json:"id" gorm:"primaryKey"`
-	Name                             string                `json:"name" gorm:"unique;not null"`
-	Type                             outbound.OutboundType `json:"type"`
-	Enabled                          bool                  `json:"enabled" gorm:"default:true"`
-	BaseUrls                         []BaseUrl             `json:"base_urls" gorm:"serializer:json"`
-	Keys                             []ChannelKey          `json:"keys" gorm:"foreignKey:ChannelID"`
-	Model                            string                `json:"model"`
-	CustomModel                      string                `json:"custom_model"`
-	Proxy                            bool                  `json:"proxy" gorm:"default:false"`
-	AutoSync                         bool                  `json:"auto_sync" gorm:"default:false"`
-	AutoGroup                        AutoGroupType         `json:"auto_group" gorm:"default:0"`
-	CustomHeader                     []CustomHeader        `json:"custom_header" gorm:"serializer:json"`
-	ParamOverride                    *string               `json:"param_override"`
-	ChannelProxy                     *string               `json:"channel_proxy"`
-	ResponsesWebsocketMaxLifetimeSec int                   `json:"responses_websocket_max_lifetime_sec" gorm:"default:3600"`
-	Stats                            *StatsChannel         `json:"stats,omitempty" gorm:"foreignKey:ChannelID"`
-	MatchRegex                       *string               `json:"match_regex"`
+	ID                               int                                       `json:"id" gorm:"primaryKey"`
+	Name                             string                                    `json:"name" gorm:"unique;not null"`
+	Type                             outbound.OutboundType                     `json:"type"`
+	Enabled                          bool                                      `json:"enabled" gorm:"default:true"`
+	BaseUrls                         []BaseUrl                                 `json:"base_urls" gorm:"serializer:json"`
+	Keys                             []ChannelKey                              `json:"keys" gorm:"foreignKey:ChannelID"`
+	Model                            string                                    `json:"model"`
+	CustomModel                      string                                    `json:"custom_model"`
+	Proxy                            bool                                      `json:"proxy" gorm:"default:false"`
+	AutoSync                         bool                                      `json:"auto_sync" gorm:"default:false"`
+	AutoGroup                        AutoGroupType                             `json:"auto_group" gorm:"default:0"`
+	CustomHeader                     []CustomHeader                            `json:"custom_header" gorm:"serializer:json"`
+	ParamOverride                    *string                                   `json:"param_override"`
+	ChannelProxy                     *string                                   `json:"channel_proxy"`
+	SystemPromptRoleOverride         transformerModel.SystemPromptRoleOverride `json:"system_prompt_role_override" gorm:"default:auto"`
+	ResponsesWebsocketMaxLifetimeSec int                                       `json:"responses_websocket_max_lifetime_sec" gorm:"default:3600"`
+	Stats                            *StatsChannel                             `json:"stats,omitempty" gorm:"foreignKey:ChannelID"`
+	MatchRegex                       *string                                   `json:"match_regex"`
 }
 
 type BaseUrl struct {
@@ -60,21 +63,22 @@ type ChannelKey struct {
 
 // ChannelUpdateRequest 渠道更新请求 - 仅包含变更的数据
 type ChannelUpdateRequest struct {
-	ID                               int                    `json:"id" binding:"required"`
-	Name                             *string                `json:"name,omitempty"`
-	Type                             *outbound.OutboundType `json:"type,omitempty"`
-	Enabled                          *bool                  `json:"enabled,omitempty"`
-	BaseUrls                         *[]BaseUrl             `json:"base_urls,omitempty"`
-	Model                            *string                `json:"model,omitempty"`
-	CustomModel                      *string                `json:"custom_model,omitempty"`
-	Proxy                            *bool                  `json:"proxy,omitempty"`
-	AutoSync                         *bool                  `json:"auto_sync,omitempty"`
-	AutoGroup                        *AutoGroupType         `json:"auto_group,omitempty"`
-	CustomHeader                     *[]CustomHeader        `json:"custom_header,omitempty"`
-	ChannelProxy                     *string                `json:"channel_proxy,omitempty"`
-	ParamOverride                    *string                `json:"param_override,omitempty"`
-	ResponsesWebsocketMaxLifetimeSec *int                   `json:"responses_websocket_max_lifetime_sec,omitempty"`
-	MatchRegex                       *string                `json:"match_regex,omitempty"`
+	ID                               int                                        `json:"id" binding:"required"`
+	Name                             *string                                    `json:"name,omitempty"`
+	Type                             *outbound.OutboundType                     `json:"type,omitempty"`
+	Enabled                          *bool                                      `json:"enabled,omitempty"`
+	BaseUrls                         *[]BaseUrl                                 `json:"base_urls,omitempty"`
+	Model                            *string                                    `json:"model,omitempty"`
+	CustomModel                      *string                                    `json:"custom_model,omitempty"`
+	Proxy                            *bool                                      `json:"proxy,omitempty"`
+	AutoSync                         *bool                                      `json:"auto_sync,omitempty"`
+	AutoGroup                        *AutoGroupType                             `json:"auto_group,omitempty"`
+	CustomHeader                     *[]CustomHeader                            `json:"custom_header,omitempty"`
+	ChannelProxy                     *string                                    `json:"channel_proxy,omitempty"`
+	ParamOverride                    *string                                    `json:"param_override,omitempty"`
+	SystemPromptRoleOverride         *transformerModel.SystemPromptRoleOverride `json:"system_prompt_role_override,omitempty"`
+	ResponsesWebsocketMaxLifetimeSec *int                                       `json:"responses_websocket_max_lifetime_sec,omitempty"`
+	MatchRegex                       *string                                    `json:"match_regex,omitempty"`
 
 	KeysToAdd    []ChannelKeyAddRequest    `json:"keys_to_add,omitempty"`
 	KeysToUpdate []ChannelKeyUpdateRequest `json:"keys_to_update,omitempty"`
@@ -100,6 +104,62 @@ type ChannelFetchModelRequest struct {
 	BaseURL string                `json:"base_url" binding:"required"`
 	Key     string                `json:"key" binding:"required"`
 	Proxy   bool                  `json:"proxy"`
+}
+
+// NormalizeChannelModelList trims, removes empty entries, and de-duplicates a
+// comma-separated model configuration while preserving the first occurrence.
+func NormalizeChannelModelList(models string) string {
+	seen := make(map[string]struct{})
+	normalized := make([]string, 0)
+	for _, name := range strings.Split(models, ",") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		normalized = append(normalized, name)
+	}
+	return strings.Join(normalized, ",")
+}
+
+// NormalizeChannelModelConfig normalizes both model lists and removes entries
+// from the automatic list that are explicitly present in the custom list.
+func NormalizeChannelModelConfig(autoModels, customModels string) (string, string) {
+	autoModels = NormalizeChannelModelList(autoModels)
+	customModels = NormalizeChannelModelList(customModels)
+	customSet := make(map[string]struct{})
+	for _, name := range strings.Split(customModels, ",") {
+		if name != "" {
+			customSet[name] = struct{}{}
+		}
+	}
+	filteredAutoModels := make([]string, 0)
+	for _, name := range strings.Split(autoModels, ",") {
+		if name == "" {
+			continue
+		}
+		if _, isCustom := customSet[name]; !isCustom {
+			filteredAutoModels = append(filteredAutoModels, name)
+		}
+	}
+	return strings.Join(filteredAutoModels, ","), customModels
+}
+
+// ChannelModelNames returns the effective model list. Custom models take
+// precedence over automatically synchronized models with the same name.
+func ChannelModelNames(autoModels, customModels string) []string {
+	autoModels, customModels = NormalizeChannelModelConfig(autoModels, customModels)
+	result := strings.Split(autoModels, ",")
+	if autoModels == "" {
+		result = nil
+	}
+	if customModels != "" {
+		result = append(result, strings.Split(customModels, ",")...)
+	}
+	return result
 }
 
 func (c *Channel) GetBaseUrl() string {

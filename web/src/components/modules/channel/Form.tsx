@@ -1,4 +1,11 @@
-import { AutoGroupType, ChannelType, type Channel, useFetchModel } from '@/api/endpoints/channel';
+import {
+    AutoGroupType,
+    ChannelType,
+    SystemPromptRoleOverride,
+    normalizeSystemPromptRoleOverride,
+    type Channel,
+    useFetchModel,
+} from '@/api/endpoints/channel';
 import {
     Select,
     SelectContent,
@@ -32,6 +39,7 @@ export interface ChannelFormData {
     custom_header: Channel['custom_header'];
     channel_proxy: string;
     param_override: string;
+    system_prompt_role_override: SystemPromptRoleOverride;
     keys: ChannelKeyFormItem[];
     model: string;
     custom_model: string;
@@ -246,7 +254,16 @@ export function ChannelForm({
                     </label>
                     <Select
                         value={String(formData.type)}
-                        onValueChange={(value) => onFormDataChange({ ...formData, type: Number(value) as ChannelType })}
+                        onValueChange={(value) => {
+                            const type = Number(value) as ChannelType;
+                            onFormDataChange({
+                                ...formData,
+                                type,
+                                system_prompt_role_override: type === ChannelType.OpenAIChat
+                                    ? normalizeSystemPromptRoleOverride(formData.system_prompt_role_override)
+                                    : SystemPromptRoleOverride.Auto,
+                            });
+                        }}
                     >
                         <SelectTrigger id={`${idPrefix}-type`} className="rounded-xl w-full border border-border px-4 py-2 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                             <SelectValue />
@@ -499,6 +516,46 @@ export function ChannelForm({
                                     className="rounded-xl"
                                 />
                             </div>
+
+                            {formData.type === ChannelType.OpenAIChat && (
+                                <div className="space-y-2">
+                                    <div className="flex items-center gap-2">
+                                        <label htmlFor={`${idPrefix}-system-prompt-role-override`} className="text-sm font-medium text-card-foreground">
+                                            {t('systemPromptRoleOverride')}
+                                        </label>
+                                        <Tooltip side="top">
+                                            <TooltipTrigger asChild>
+                                                <button
+                                                    type="button"
+                                                    className="inline-flex size-4 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground"
+                                                    aria-label={t('systemPromptRoleOverrideHint')}
+                                                >
+                                                    <CircleHelp className="size-4" />
+                                                </button>
+                                            </TooltipTrigger>
+                                            <TooltipContent className="max-w-xs text-sm">
+                                                {t('systemPromptRoleOverrideHint')}
+                                            </TooltipContent>
+                                        </Tooltip>
+                                    </div>
+                                    <Select
+                                        value={normalizeSystemPromptRoleOverride(formData.system_prompt_role_override)}
+                                        onValueChange={(value) => onFormDataChange({
+                                            ...formData,
+                                            system_prompt_role_override: normalizeSystemPromptRoleOverride(value),
+                                        })}
+                                    >
+                                        <SelectTrigger id={`${idPrefix}-system-prompt-role-override`} className="rounded-xl w-full border border-border px-4 py-2 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent className="rounded-xl">
+                                            <SelectItem className="rounded-xl" value={SystemPromptRoleOverride.Auto}>{t('systemPromptRoleOverrideAuto')}</SelectItem>
+                                            <SelectItem className="rounded-xl" value={SystemPromptRoleOverride.System}>{t('systemPromptRoleOverrideSystem')}</SelectItem>
+                                            <SelectItem className="rounded-xl" value={SystemPromptRoleOverride.Developer}>{t('systemPromptRoleOverrideDeveloper')}</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            )}
                         </div>
 
                         <div className="space-y-2">

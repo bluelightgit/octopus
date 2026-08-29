@@ -232,6 +232,8 @@
             "loadFailed": "加载失败",
             "form": {
                 "name": "名称",
+                "value": "密钥值",
+                "valuePlaceholder": "留空自动生成",
                 "maxCost": "最大金额",
                 "maxCostPlaceholder": "请输入金额",
                 "unlimited": "无限制",
@@ -279,7 +281,17 @@
             "lastUpdate": "上次更新",
             "neverUpdated": "从未更新",
             "updateSuccess": "价格更新成功",
-            "updateFailed": "价格更新失败"
+            "updateFailed": "价格更新失败",
+            "rebuild": {
+                "label": "重建价格数据",
+                "description": "重新匹配仍被引用的模型并清理未使用的价格记录，会重置手动价格。",
+                "button": "重建",
+                "cancel": "取消",
+                "confirm": "确认重建",
+                "rebuilding": "重建中...",
+                "success": "价格数据重建成功，共处理 {count} 个模型",
+                "failed": "价格数据重建失败"
+            }
         },
         "llmSync": {
             "title": "渠道同步",
@@ -600,6 +612,11 @@
             "channelProxyPlaceholder": "可选：仅对该渠道生效（覆盖全局代理）",
             "paramOverride": "参数覆盖",
             "paramOverridePlaceholder": "可选：JSON 字符串，用于覆盖请求参数",
+            "systemPromptRoleOverride": "系统提示词角色覆盖",
+            "systemPromptRoleOverrideHint": "可将 system 和 developer 系统提示词统一发送为指定角色；默认保持客户端原始角色。主要对 OpenAI Chat 兼容渠道生效。",
+            "systemPromptRoleOverrideAuto": "自动（保持原始角色）",
+            "systemPromptRoleOverrideSystem": "统一使用 system",
+            "systemPromptRoleOverrideDeveloper": "统一使用 developer",
             "responsesWebsocketMaxLifetime": "Responses WS 会话时长(秒)",
             "responsesWebsocketMaxLifetimeHint": "仅对 OpenAI Responses 渠道生效。用于控制网关主动关闭该上游 WebSocket 的最长连接时长，默认 3600 秒。",
             "model": "模型",

@@ -84,7 +84,7 @@ export function useAPIKeyDashboardStats() {
 /**
  * 创建 API Key 请求
  */
-export type CreateAPIKeyRequest = Omit<APIKey, 'id' | 'api_key'> & { enabled?: boolean };
+export type CreateAPIKeyRequest = Omit<APIKey, 'id'> & { enabled?: boolean };
 
 /**
  * 更新 API Key 请求

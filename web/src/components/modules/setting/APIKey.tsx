@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useId, useMemo, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { KeyRound, Plus, Loader, Trash2, Check, X, Info, CalendarDays, Pencil, Maximize2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -71,11 +71,13 @@ function hasModel(supported: string | undefined, model: string): boolean {
     return supported ? supported.split(',').includes(model) : false;
 }
 
+type APIKeyFormData = Omit<APIKey, 'id'>;
+
 interface APIKeyFormProps {
     apiKey?: APIKey;
     isPending: boolean;
     submitLabel: string;
-    onSubmit: (data: Omit<APIKey, 'id' | 'api_key'>) => void;
+    onSubmit: (data: APIKeyFormData) => void;
     onClose: () => void;
 }
 
@@ -83,8 +85,9 @@ function APIKeyForm({ apiKey, isPending, submitLabel, onSubmit, onClose }: APIKe
     const t = useTranslations('setting');
     const { data: groups = [] } = useGroupList();
 
-    const [form, setForm] = useState<Omit<APIKey, 'id' | 'api_key'>>(() => ({
+    const [form, setForm] = useState<APIKeyFormData>(() => ({
         name: apiKey?.name ?? '',
+        api_key: apiKey?.api_key ?? '',
         enabled: apiKey?.enabled ?? true,
         expire_at: apiKey?.expire_at,
         max_cost: apiKey?.max_cost,
@@ -119,7 +122,7 @@ function APIKeyForm({ apiKey, isPending, submitLabel, onSubmit, onClose }: APIKe
             ? expireDate.toLocaleDateString()
             : t('apiKey.form.selectDate');
 
-    const updateForm = useCallback((updater: Partial<Omit<APIKey, 'id' | 'api_key'>>) => {
+    const updateForm = useCallback((updater: Partial<APIKeyFormData>) => {
         setForm((prev) => ({ ...prev, ...updater }));
     }, []);
 
@@ -177,6 +180,18 @@ function APIKeyForm({ apiKey, isPending, submitLabel, onSubmit, onClose }: APIKe
                     className="h-9 text-sm rounded-xl"
                     disabled={isPending}
                     required
+                />
+            </label>
+
+            <label className="grid gap-1 text-xs text-muted-foreground">
+                {t('apiKey.form.value')}
+                <Input
+                    type="text"
+                    value={form.api_key}
+                    onChange={(e) => updateForm({ api_key: e.target.value })}
+                    placeholder={t('apiKey.form.valuePlaceholder')}
+                    className="h-9 text-sm rounded-xl"
+                    disabled={isPending}
                 />
             </label>
 
@@ -356,7 +371,7 @@ function APIKeyFormOverlay({
     apiKey?: APIKey;
     isPending: boolean;
     submitLabel: string;
-    onSubmit: (data: Omit<APIKey, 'id' | 'api_key'>) => void;
+    onSubmit: (data: APIKeyFormData) => void;
     onClose: () => void;
 }) {
     return (
@@ -616,7 +631,7 @@ function APIKeyPanelBase({
 
     const disabledHeaderActions = createAPIKey.isPending || isAdding || !!viewingStats || !!editingKey;
 
-    const handleCreate = useCallback((data: Omit<APIKey, 'id' | 'api_key'>) => {
+    const handleCreate = useCallback((data: APIKeyFormData) => {
         createAPIKey.mutate(data, {
             onSuccess: () => {
                 toast.success(t('apiKey.toast.createSuccess'));
@@ -629,7 +644,7 @@ function APIKeyPanelBase({
         });
     }, [createAPIKey, t]);
 
-    const handleUpdate = useCallback((apiKey: APIKey, data: Omit<APIKey, 'id' | 'api_key'>) => {
+    const handleUpdate = useCallback((apiKey: APIKey, data: APIKeyFormData) => {
         updateAPIKey.mutate({ id: apiKey.id, ...data }, {
             onSuccess: () => {
                 toast.success(t('apiKey.toast.updateSuccess'));

@@ -25,6 +25,33 @@ export enum AutoGroupType {
     Regex = 3,  // 正则匹配
 }
 
+/**
+ * Per-channel override for system-level prompt message roles.
+ */
+export enum SystemPromptRoleOverride {
+    Auto = 'auto',
+    System = 'system',
+    Developer = 'developer',
+}
+
+/**
+ * Normalize values returned by older databases or incomplete API responses.
+ * Empty and unknown values are intentionally treated as the backwards-
+ * compatible auto mode.
+ */
+export function normalizeSystemPromptRoleOverride(
+    value?: string | null,
+): SystemPromptRoleOverride {
+    switch (value) {
+        case SystemPromptRoleOverride.System:
+        case SystemPromptRoleOverride.Developer:
+        case SystemPromptRoleOverride.Auto:
+            return value;
+        default:
+            return SystemPromptRoleOverride.Auto;
+    }
+}
+
 export type BaseUrl = {
     url: string;
     delay: number;
@@ -64,6 +91,7 @@ export type Channel = {
     custom_header: CustomHeader[];
     param_override?: string | null;
     channel_proxy?: string | null;
+    system_prompt_role_override: SystemPromptRoleOverride;
     responses_websocket_max_lifetime_sec: number;
     match_regex?: string | null;
     stats: StatsChannel;
@@ -93,6 +121,7 @@ export type CreateChannelRequest = {
     custom_header?: CustomHeader[];
     channel_proxy?: string | null;
     param_override?: string | null;
+    system_prompt_role_override?: SystemPromptRoleOverride;
     responses_websocket_max_lifetime_sec?: number;
     match_regex?: string | null;
 };
@@ -114,6 +143,7 @@ export type UpdateChannelRequest = {
     custom_header?: CustomHeader[];
     channel_proxy?: string | null;
     param_override?: string | null;
+    system_prompt_role_override?: SystemPromptRoleOverride;
     responses_websocket_max_lifetime_sec?: number;
     match_regex?: string | null;
     // keys diff
@@ -155,6 +185,7 @@ export function useChannelList() {
                 base_urls: item.base_urls ?? [],
                 custom_header: item.custom_header ?? [],
                 keys: item.keys ?? [],
+                system_prompt_role_override: normalizeSystemPromptRoleOverride(item.system_prompt_role_override),
             }) satisfies Channel,
             formatted: {
                 input_token: formatCount(item.stats.input_token),
@@ -200,6 +231,7 @@ export function useCreateChannel() {
             queryClient.invalidateQueries({ queryKey: ['channels', 'list'] });
             queryClient.invalidateQueries({ queryKey: ['models', 'list'] });
             queryClient.invalidateQueries({ queryKey: ['models', 'channel'] });
+            queryClient.invalidateQueries({ queryKey: ['groups', 'list'] });
         },
         onError: (error) => {
             logger.error('渠道创建失败:', error);
@@ -234,7 +266,9 @@ export function useUpdateChannel() {
         onSuccess: (data) => {
             logger.log('渠道更新成功:', data);
             queryClient.invalidateQueries({ queryKey: ['channels', 'list'] });
+            queryClient.invalidateQueries({ queryKey: ['models', 'list'] });
             queryClient.invalidateQueries({ queryKey: ['models', 'channel'] });
+            queryClient.invalidateQueries({ queryKey: ['groups', 'list'] });
         },
         onError: (error) => {
             logger.error('渠道更新失败:', error);
@@ -260,7 +294,9 @@ export function useDeleteChannel() {
         onSuccess: () => {
             logger.log('渠道删除成功');
             queryClient.invalidateQueries({ queryKey: ['channels', 'list'] });
+            queryClient.invalidateQueries({ queryKey: ['models', 'list'] });
             queryClient.invalidateQueries({ queryKey: ['models', 'channel'] });
+            queryClient.invalidateQueries({ queryKey: ['groups', 'list'] });
         },
         onError: (error) => {
             logger.error('渠道删除失败:', error);
@@ -287,6 +323,7 @@ export function useEnableChannel() {
         onSuccess: () => {
             logger.log('渠道状态更新成功');
             queryClient.invalidateQueries({ queryKey: ['channels', 'list'] });
+            queryClient.invalidateQueries({ queryKey: ['models', 'channel'] });
         },
         onError: (error) => {
             logger.error('渠道状态更新失败:', error);
@@ -360,6 +397,10 @@ export function useSyncChannel() {
         onSuccess: () => {
             logger.log('渠道同步成功');
             queryClient.invalidateQueries({ queryKey: ['channels', 'last-sync-time'] });
+            queryClient.invalidateQueries({ queryKey: ['channels', 'list'] });
+            queryClient.invalidateQueries({ queryKey: ['models', 'list'] });
+            queryClient.invalidateQueries({ queryKey: ['models', 'channel'] });
+            queryClient.invalidateQueries({ queryKey: ['groups', 'list'] });
         },
         onError: (error) => {
             logger.error('渠道同步失败:', error);

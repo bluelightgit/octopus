@@ -149,7 +149,7 @@ func HandleResponsesWebsocket(c *gin.Context) {
 		op.StatsChannelUpdate(session.channel.ID, dbmodel.StatsMetrics{RequestFailed: 1})
 		session.usedKey.StatusCode = http.StatusSwitchingProtocols
 		session.usedKey.LastUseTimeStamp = time.Now().Unix()
-		op.ChannelKeyUpdate(session.usedKey)
+		op.ChannelKeyUpdate(session.usedKey, 0)
 		metrics.RecordExecutionTrace(fmt.Sprintf("ws_forward_failed: first_frame error=%s", err.Error()))
 		metrics.Save(c.Request.Context(), false, err, session.iter.Attempts())
 		writeWebsocketClose(clientConn, websocket.CloseInternalServerErr, err.Error())
@@ -164,7 +164,7 @@ func HandleResponsesWebsocket(c *gin.Context) {
 		op.StatsChannelUpdate(session.channel.ID, dbmodel.StatsMetrics{RequestFailed: 1})
 		session.usedKey.StatusCode = http.StatusSwitchingProtocols
 		session.usedKey.LastUseTimeStamp = time.Now().Unix()
-		op.ChannelKeyUpdate(session.usedKey)
+		op.ChannelKeyUpdate(session.usedKey, 0)
 		metrics.RecordExecutionTrace(fmt.Sprintf("ws_proxy_failed: %s", err.Error()))
 		metrics.Save(c.Request.Context(), false, err, session.iter.Attempts())
 		return
@@ -175,7 +175,7 @@ func HandleResponsesWebsocket(c *gin.Context) {
 	op.StatsChannelUpdate(session.channel.ID, dbmodel.StatsMetrics{RequestSuccess: 1})
 	session.usedKey.StatusCode = http.StatusSwitchingProtocols
 	session.usedKey.LastUseTimeStamp = time.Now().Unix()
-	op.ChannelKeyUpdate(session.usedKey)
+	op.ChannelKeyUpdate(session.usedKey, 0)
 	if session.responsesStateful != nil {
 		lookupKeys := session.responsesStateful.AllLookupKeys()
 		if len(lookupKeys) > 0 {
@@ -390,7 +390,7 @@ func establishResponsesWebsocketSessionWithDialer(ctx context.Context, c *gin.Co
 			op.StatsChannelUpdate(channel.ID, dbmodel.StatsMetrics{RequestFailed: 1})
 			usedKey.StatusCode = statusCode
 			usedKey.LastUseTimeStamp = time.Now().Unix()
-			op.ChannelKeyUpdate(usedKey)
+			op.ChannelKeyUpdate(usedKey, 0)
 			lastErr = fmt.Errorf("channel %s failed: %s", channel.Name, message)
 			continue
 		}

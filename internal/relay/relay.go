@@ -163,6 +163,10 @@ func Handler(inboundType inbound.InboundType, c *gin.Context) {
 					activeIter.Skip(channel.ID, 0, channel.Name, fmt.Sprintf("raw-only request requires channel type %d", rawOnlyRequiredType))
 					continue
 				}
+				if effectiveSystemPromptRoleOverride(channel.Type, channel.SystemPromptRoleOverride) != model.SystemPromptRoleOverrideAuto && internalRequest.RawAPIFormat != model.APIFormatOpenAIChatCompletion {
+					activeIter.Skip(channel.ID, 0, channel.Name, "system prompt role override is unsupported for this raw-only protocol")
+					continue
+				}
 				rawOnlySawCompatible = true
 			}
 
@@ -395,8 +399,8 @@ func (ra *relayAttempt) attempt() attemptResult {
 	if fwdErr == nil {
 		// ====== 成功 ======
 		ra.collectResponse()
-		ra.usedKey.TotalCost += ra.metrics.Stats.InputCost + ra.metrics.Stats.OutputCost
-		op.ChannelKeyUpdate(ra.usedKey)
+		costDelta := ra.metrics.Stats.InputCost + ra.metrics.Stats.OutputCost
+		op.ChannelKeyUpdate(ra.usedKey, costDelta)
 
 		span.End(dbmodel.AttemptSuccess, statusCode, "")
 
@@ -437,7 +441,7 @@ func (ra *relayAttempt) attempt() attemptResult {
 	}
 
 	// ====== 失败 ======
-	op.ChannelKeyUpdate(ra.usedKey)
+	op.ChannelKeyUpdate(ra.usedKey, 0)
 	span.End(dbmodel.AttemptFailed, statusCode, fwdErr.Error())
 
 	// Channel 维度统计
@@ -701,6 +705,23 @@ func (ra *relayAttempt) isPassthroughTerminalEvent(eventType, data string) bool 
 	return false
 }
 
+// shouldStopAfterStreamTerminal reports whether the client protocol treats the
+// terminal event as the complete response. OpenAI Chat still needs to receive
+// its separate [DONE] sentinel, while Responses and Anthropic have a terminal
+// event in the protocol payload itself.
+func (ra *relayAttempt) shouldStopAfterStreamTerminal() bool {
+	if ra == nil || ra.internalRequest == nil {
+		return false
+	}
+
+	switch ra.internalRequest.RawAPIFormat {
+	case model.APIFormatOpenAIResponse, model.APIFormatAnthropicMessage:
+		return true
+	default:
+		return false
+	}
+}
+
 func isTerminalInternalStream(stream *model.InternalLLMResponse) bool {
 	if stream == nil {
 		return false
@@ -798,9 +819,15 @@ func (ra *relayAttempt) forward() (int, error) {
 	if baseURL == "" {
 		baseURL = ra.channel.GetBaseUrl()
 	}
+	outboundModel := ra.internalRequest
+	roleOverride := effectiveSystemPromptRoleOverride(ra.channel.Type, ra.channel.SystemPromptRoleOverride)
+	if roleOverride != model.SystemPromptRoleOverrideAuto {
+		outboundModel = ra.internalRequest.CloneWithSystemPromptRoleOverride(roleOverride)
+		ra.tracef("system_prompt_role_override: %s", roleOverride)
+	}
 	outboundRequest, err := ra.outAdapter.TransformRequest(
 		ctx,
-		ra.internalRequest,
+		outboundModel,
 		baseURL,
 		ra.usedKey.ChannelKey,
 	)
@@ -833,6 +860,13 @@ func (ra *relayAttempt) forward() (int, error) {
 		return response.StatusCode, err
 	}
 	return response.StatusCode, nil
+}
+
+func effectiveSystemPromptRoleOverride(channelType outbound.OutboundType, override model.SystemPromptRoleOverride) model.SystemPromptRoleOverride {
+	if channelType != outbound.OutboundTypeOpenAIChat {
+		return model.SystemPromptRoleOverrideAuto
+	}
+	return override.Normalize()
 }
 
 // copyHeaders 复制请求头，过滤 hop-by-hop 头
@@ -1145,6 +1179,10 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 						stopTimer(idleTimer)
 						idleTimer = nil
 						idleC = nil
+						if ra.shouldStopAfterStreamTerminal() {
+							_ = response.Body.Close()
+							return err
+						}
 					}
 					continue
 				}
@@ -1192,6 +1230,12 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				writePassthroughChunk(r.eventType, r.data, data)
 			} else {
 				writeChunk(data)
+			}
+
+			if terminal && ra.shouldStopAfterStreamTerminal() {
+				ra.tracef("stream_terminal_return: event#%d", streamEventIndex)
+				_ = response.Body.Close()
+				return nil
 			}
 		}
 	}

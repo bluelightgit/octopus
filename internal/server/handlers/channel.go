@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/bluelightgit/octopus/internal/server/resp"
 	"github.com/bluelightgit/octopus/internal/server/router"
 	"github.com/bluelightgit/octopus/internal/task"
+	transformerModel "github.com/bluelightgit/octopus/internal/transformer/model"
 	"github.com/gin-gonic/gin"
 )
 
@@ -70,10 +72,28 @@ func listChannel(c *gin.Context) {
 	resp.Success(c, channels)
 }
 
+func normalizeSystemPromptRoleOverride(value *transformerModel.SystemPromptRoleOverride) error {
+	if value == nil {
+		return nil
+	}
+	if *value == "" {
+		*value = transformerModel.SystemPromptRoleOverrideAuto
+		return nil
+	}
+	if !value.IsValid() {
+		return fmt.Errorf("invalid system_prompt_role_override: %q", *value)
+	}
+	return nil
+}
+
 func createChannel(c *gin.Context) {
 	var channel model.Channel
 	if err := c.ShouldBindJSON(&channel); err != nil {
 		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidJSON)
+		return
+	}
+	if err := normalizeSystemPromptRoleOverride(&channel.SystemPromptRoleOverride); err != nil {
+		resp.Error(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	if err := op.ChannelCreate(&channel, c.Request.Context()); err != nil {
@@ -98,6 +118,10 @@ func updateChannel(c *gin.Context) {
 	var req model.ChannelUpdateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidJSON)
+		return
+	}
+	if err := normalizeSystemPromptRoleOverride(req.SystemPromptRoleOverride); err != nil {
+		resp.Error(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	channel, err := op.ChannelUpdate(&req, c.Request.Context())
@@ -163,7 +187,10 @@ func fetchModel(c *gin.Context) {
 }
 
 func syncChannel(c *gin.Context) {
-	task.SyncModelsTask()
+	if err := task.SyncModelsTask(); err != nil {
+		resp.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
 	resp.Success(c, nil)
 }
 

@@ -214,7 +214,7 @@ export function AppContainer() {
         >
             <NavBar />
             <main className="flex min-h-0 w-full min-w-0 flex-1 flex-col">
-                <header className="my-6 flex flex-none items-center gap-x-2 px-2">
+                <header className="my-3 flex flex-none items-center gap-x-2 px-2 md:my-6">
                     <Logo size={48} />
                     <div className="flex-1 overflow-hidden">
                         <AnimatePresence mode="wait" custom={direction}>

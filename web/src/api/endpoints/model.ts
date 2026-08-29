@@ -185,6 +185,26 @@ export function useUpdateModelPrice() {
 }
 
 /**
+ * 清理未引用模型并按当前目录重建模型价格
+ */
+export function useRebuildModelPrice() {
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: async () => {
+            return apiClient.post<{ count: number }>('/api/v1/model/rebuild-price', {});
+        },
+        onSuccess: () => {
+            logger.log('模型价格重建成功');
+            queryClient.invalidateQueries({ queryKey: ['models', 'list'] });
+        },
+        onError: (error) => {
+            logger.error('模型价格重建失败:', error);
+        },
+    });
+}
+
+/**
  * 获取 LLM 模型价格最后更新时间 Hook
  * 
  * @example

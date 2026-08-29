@@ -11,7 +11,15 @@ import {
     Globe,
     Key
 } from 'lucide-react';
-import { useUpdateChannel, useDeleteChannel, type Channel, type UpdateChannelRequest } from '@/api/endpoints/channel';
+import {
+    useUpdateChannel,
+    useDeleteChannel,
+    ChannelType,
+    SystemPromptRoleOverride,
+    normalizeSystemPromptRoleOverride,
+    type Channel,
+    type UpdateChannelRequest,
+} from '@/api/endpoints/channel';
 import {
     MorphingDialogTitle,
     MorphingDialogDescription,
@@ -41,6 +49,9 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         custom_header: channel.custom_header ?? [],
         channel_proxy: channel.channel_proxy ?? '',
         param_override: channel.param_override ?? '',
+        system_prompt_role_override: channel.type === ChannelType.OpenAIChat
+            ? normalizeSystemPromptRoleOverride(channel.system_prompt_role_override)
+            : SystemPromptRoleOverride.Auto,
         keys: channel.keys.length > 0
             ? channel.keys.map((k) => ({
                 id: k.id,
@@ -107,6 +118,12 @@ export function CardContent({ channel, stats }: { channel: Channel; stats: Stats
         if (nextParamOverride !== curParamOverride) {
             // Empty string means "clear" for patch semantics; backend maps it to NULL.
             req.param_override = nextParamOverride;
+        }
+
+        const nextSystemPromptRoleOverride = normalizeSystemPromptRoleOverride(formData.system_prompt_role_override);
+        const curSystemPromptRoleOverride = normalizeSystemPromptRoleOverride(channel.system_prompt_role_override);
+        if (nextSystemPromptRoleOverride !== curSystemPromptRoleOverride) {
+            req.system_prompt_role_override = nextSystemPromptRoleOverride;
         }
 
         if (formData.responses_websocket_max_lifetime_sec !== channel.responses_websocket_max_lifetime_sec) req.responses_websocket_max_lifetime_sec = formData.responses_websocket_max_lifetime_sec;

@@ -24,6 +24,37 @@ const (
 	APIFormatAiSDKDataStream       APIFormat = "aisdk/datastream"
 )
 
+// SystemPromptRoleOverride controls how system-level messages are represented
+// when a request is sent to a specific upstream channel.
+//
+// Auto preserves the roles supplied by the client. The other values rewrite
+// both system and developer messages to the selected role. This is kept as a
+// transformer-level option because the original request must remain unchanged
+// for logging, affinity, and retries.
+type SystemPromptRoleOverride string
+
+const (
+	SystemPromptRoleOverrideAuto      SystemPromptRoleOverride = "auto"
+	SystemPromptRoleOverrideSystem    SystemPromptRoleOverride = "system"
+	SystemPromptRoleOverrideDeveloper SystemPromptRoleOverride = "developer"
+)
+
+func (o SystemPromptRoleOverride) IsValid() bool {
+	switch o {
+	case SystemPromptRoleOverrideAuto, SystemPromptRoleOverrideSystem, SystemPromptRoleOverrideDeveloper:
+		return true
+	default:
+		return false
+	}
+}
+
+func (o SystemPromptRoleOverride) Normalize() SystemPromptRoleOverride {
+	if !o.IsValid() || o == "" {
+		return SystemPromptRoleOverrideAuto
+	}
+	return o
+}
+
 // Request is the unified llm request model for AxonHub, to keep compatibility with major app and framework.
 // It choose to base on the OpenAI chat completion request, but add some extra fields to support more features.
 type InternalLLMRequest struct {
@@ -191,6 +222,14 @@ type InternalLLMRequest struct {
 
 	// EnableThinking is used by Alibaba Qwen models to enable thinking/reasoning output.
 	EnableThinking *bool `json:"enable_thinking,omitempty"`
+
+	// Thinking is used by DeepSeek to control thinking mode, for example
+	// {"type":"disabled"} or {"type":"enabled","budget_tokens":1024}.
+	Thinking json.RawMessage `json:"thinking,omitempty"`
+
+	// ChatTemplateKwargs carries provider-specific chat template options used by
+	// NVIDIA-compatible endpoints, for example {"enable_thinking":true}.
+	ChatTemplateKwargs json.RawMessage `json:"chat_template_kwargs,omitempty"`
 
 	// Specifies the processing type used for serving the request.
 	ServiceTier *string `json:"service_tier,omitempty"`
@@ -401,6 +440,36 @@ func (r *InternalLLMRequest) ClearHelpFields() {
 	r.Include = nil
 }
 
+// CloneWithSystemPromptRoleOverride returns an outbound-only request copy.
+// The original request is shared by metrics, affinity calculation, and retry
+// attempts, so channel-specific role rewriting must never mutate it.
+func (r *InternalLLMRequest) CloneWithSystemPromptRoleOverride(override SystemPromptRoleOverride) *InternalLLMRequest {
+	if r == nil {
+		return nil
+	}
+
+	clone := *r
+	clone.Messages = append([]Message(nil), r.Messages...)
+	clone.TransformOptions = r.TransformOptions
+	clone.TransformOptions.SystemPromptRoleOverride = override.Normalize()
+	// RawRequest is immutable here. Reusing it avoids duplicating potentially
+	// very large client bodies for every channel retry; raw adapters parse it
+	// into a separate JSON object before applying any rewrite.
+
+	if clone.TransformOptions.SystemPromptRoleOverride == SystemPromptRoleOverrideAuto {
+		return &clone
+	}
+
+	role := string(clone.TransformOptions.SystemPromptRoleOverride)
+	for i := range clone.Messages {
+		switch clone.Messages[i].Role {
+		case "system", "developer":
+			clone.Messages[i].Role = role
+		}
+	}
+	return &clone
+}
+
 func (r *InternalLLMRequest) IsImageGenerationRequest() bool {
 	return len(r.Modalities) > 0 && slices.Contains(r.Modalities, "image")
 }
@@ -408,6 +477,10 @@ func (r *InternalLLMRequest) IsImageGenerationRequest() bool {
 type TransformOptions struct {
 	// ArrayInputs specifies whether the original input was an array.
 	ArrayInputs *bool `json:"-"`
+
+	// SystemPromptRoleOverride is applied only to the per-channel outbound
+	// request copy. It is intentionally not serialized or stored in logs.
+	SystemPromptRoleOverride SystemPromptRoleOverride `json:"-"`
 }
 
 type StreamOptions struct {

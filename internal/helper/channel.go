@@ -2,7 +2,7 @@ package helper
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -10,13 +10,12 @@ import (
 	"github.com/bluelightgit/octopus/internal/model"
 	"github.com/bluelightgit/octopus/internal/op"
 	"github.com/bluelightgit/octopus/internal/utils/log"
-	"github.com/bluelightgit/octopus/internal/utils/xstrings"
 	"github.com/dlclark/regexp2"
 )
 
 func ChannelHttpClient(channel *model.Channel) (*http.Client, error) {
 	if channel == nil {
-		return nil, errors.New("channel is nil")
+		return nil, fmt.Errorf("channel is nil")
 	}
 	if !channel.Proxy {
 		return client.GetHTTPClientSystemProxy(false)
@@ -31,14 +30,14 @@ func ChannelBaseUrlDelayUpdate(channel *model.Channel, ctx context.Context) {
 	if channel == nil {
 		return
 	}
+	httpClient, err := ChannelHttpClient(channel)
+	if err != nil {
+		log.Warnf("failed to get http client (channel=%d): %v", channel.ID, err)
+		return
+	}
 	newBaseUrls := make([]model.BaseUrl, 0, len(channel.BaseUrls))
 	for _, baseUrl := range channel.BaseUrls {
 		if baseUrl.URL == "" {
-			continue
-		}
-		httpClient, err := ChannelHttpClient(channel)
-		if err != nil {
-			log.Warnf("failed to get http client (channel=%d): %v", channel.ID, err)
 			continue
 		}
 		delay, err := GetUrlDelay(httpClient, baseUrl.URL, ctx)
@@ -69,7 +68,7 @@ func ChannelAutoGroup(channel *model.Channel, ctx context.Context) {
 		return
 	}
 
-	channelModelNames := xstrings.SplitTrimCompact(",", channel.Model, channel.CustomModel)
+	channelModelNames := model.ChannelModelNames(channel.Model, channel.CustomModel)
 	if len(channelModelNames) == 0 {
 		return
 	}

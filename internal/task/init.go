@@ -48,7 +48,11 @@ func Init() {
 		return
 	}
 	syncLLMInterval := time.Duration(syncLLMIntervalHours) * time.Hour
-	Register(string(model.SettingKeySyncLLMInterval), syncLLMInterval, true, SyncModelsTask)
+	Register(string(model.SettingKeySyncLLMInterval), syncLLMInterval, true, func() {
+		if err := SyncModelsTask(); err != nil {
+			log.Warnf("failed to sync models: %v", err)
+		}
+	})
 
 	// 注册统计保存任务
 	statsSaveIntervalMinutes, err := op.SettingGetInt(model.SettingKeyStatsSaveInterval)

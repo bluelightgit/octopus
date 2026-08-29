@@ -665,7 +665,6 @@ func TestRelayHandler_StreamTerminalEvent_Succeeds(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"upstream\",\"status\":\"in_progress\",\"output\":[]}}\n\n"))
 		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"upstream\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer upstream.Close()
 
@@ -685,7 +684,7 @@ func TestRelayHandler_StreamTerminalEvent_Succeeds(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d, body: %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "data: [DONE]") {
+	if !strings.Contains(w.Body.String(), "response.completed") {
 		t.Fatalf("expected terminal stream body, got %q", w.Body.String())
 	}
 	logItem := lastRelayLog(t, ctx)
@@ -697,6 +696,69 @@ func TestRelayHandler_StreamTerminalEvent_Succeeds(t *testing.T) {
 	}
 	if logItem.FailureStage != nil {
 		t.Fatalf("expected empty failure stage, got %v", logItem.FailureStage)
+	}
+}
+
+func TestRelayHandler_ResponsesTerminalEventDoesNotWaitForUpstreamClose(t *testing.T) {
+	ctx := setupRelayTestEnv(t)
+	apiKey := createRelayTestAPIKey(t, ctx)
+
+	prevIdle := relayStreamIdleTimeout
+	relayStreamIdleTimeout = 0
+	t.Cleanup(func() { relayStreamIdleTimeout = prevIdle })
+	prevPrelude := relayResponsesPreludeTimeout
+	relayResponsesPreludeTimeout = 0
+	t.Cleanup(func() { relayResponsesPreludeTimeout = prevPrelude })
+
+	upstreamRelease := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_terminal\",\"model\":\"upstream\",\"status\":\"in_progress\",\"output\":[]}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_terminal\",\"model\":\"upstream\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		<-upstreamRelease
+	}))
+	defer func() {
+		close(upstreamRelease)
+		upstream.Close()
+	}()
+
+	requestModel := "responses-terminal-open-connection"
+	channel := createRelayTestChannel(t, ctx, "responses-terminal-channel", outbound.OutboundTypeOpenAIResponse, upstream.URL+"/v1")
+	createRelayTestGroupItem(t, ctx, requestModel, channel.ID, "upstream")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader([]byte(`{"model":"responses-terminal-open-connection","stream":true,"input":"hi"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	c.Set("api_key_id", apiKey.ID)
+
+	done := make(chan struct{})
+	go func() {
+		Handler(inbound.InboundTypeOpenAIResponse, c)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("relay did not return after the Responses terminal event")
+	}
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d, body: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "response.completed") {
+		t.Fatalf("expected terminal event in response body, got %q", w.Body.String())
+	}
+	logItem := lastRelayLog(t, ctx)
+	if logItem.Error != "" {
+		t.Fatalf("expected successful relay log, got %q", logItem.Error)
 	}
 }
 
@@ -865,7 +927,7 @@ func TestRelayHandler_ResponsesPreludeTimeout_FallsBackBeforeClientWrite(t *test
 	if strings.Contains(body, "resp_stalled") {
 		t.Fatalf("unexpected prelude from stalled channel leaked to client: %q", body)
 	}
-	if !strings.Contains(body, "resp_ok") || !strings.Contains(body, "hello") || !strings.Contains(body, "data: [DONE]") {
+	if !strings.Contains(body, "resp_ok") || !strings.Contains(body, "hello") || !strings.Contains(body, "response.completed") {
 		t.Fatalf("expected fallback channel output, got %q", body)
 	}
 	logItem := lastRelayLog(t, ctx)
@@ -954,7 +1016,7 @@ func TestRelayHandler_ResponsesPreludeTimeout_FallsBackWithDefaultGuardWhenGroup
 	if strings.Contains(body, "resp_stalled") {
 		t.Fatalf("unexpected prelude from stalled channel leaked to client: %q", body)
 	}
-	if !strings.Contains(body, "resp_ok") || !strings.Contains(body, "hello") || !strings.Contains(body, "data: [DONE]") {
+	if !strings.Contains(body, "resp_ok") || !strings.Contains(body, "hello") || !strings.Contains(body, "response.completed") {
 		t.Fatalf("expected fallback channel output, got %q", body)
 	}
 	logItem := lastRelayLog(t, ctx)
@@ -1367,7 +1429,6 @@ func TestRelayHandler_ResponsesUnknownPreludeEvent_FallsBackWithoutLeakingClient
 		"response.heartbeat",
 		"response.output_text.delta",
 		"response.completed",
-		"[DONE]",
 	)
 }
 

@@ -232,6 +232,8 @@
             "loadFailed": "Failed to load",
             "form": {
                 "name": "Name",
+                "value": "Key Value",
+                "valuePlaceholder": "Leave empty to generate",
                 "maxCost": "Max Cost",
                 "maxCostPlaceholder": "Enter amount",
                 "unlimited": "Unlimited",
@@ -279,7 +281,17 @@
             "lastUpdate": "Last Update",
             "neverUpdated": "Never updated",
             "updateSuccess": "Price updated successfully",
-            "updateFailed": "Failed to update price"
+            "updateFailed": "Failed to update price",
+            "rebuild": {
+                "label": "Rebuild price data",
+                "description": "Rematch referenced models and remove unused price rows. Manual prices will be reset.",
+                "button": "Rebuild",
+                "cancel": "Cancel",
+                "confirm": "Confirm rebuild",
+                "rebuilding": "Rebuilding...",
+                "success": "Price data rebuilt for {count} models",
+                "failed": "Failed to rebuild price data"
+            }
         },
         "llmSync": {
             "title": "Channel Sync",
@@ -600,6 +612,11 @@
             "channelProxyPlaceholder": "Optional: proxy for this channel (overrides global proxy)",
             "paramOverride": "Param Override",
             "paramOverridePlaceholder": "Optional: JSON string to override request params",
+            "systemPromptRoleOverride": "System Prompt Role Override",
+            "systemPromptRoleOverrideHint": "Rewrite system and developer prompts to one role. Default preserves the client's original roles. Mainly applies to OpenAI Chat-compatible channels.",
+            "systemPromptRoleOverrideAuto": "Auto (preserve original roles)",
+            "systemPromptRoleOverrideSystem": "Always use system",
+            "systemPromptRoleOverrideDeveloper": "Always use developer",
             "responsesWebsocketMaxLifetime": "Responses WebSocket Session Lifetime (sec)",
             "responsesWebsocketMaxLifetimeHint": "Only applies to OpenAI Responses channels. Controls how long the gateway keeps the upstream websocket alive before proactively reconnecting. Default is 3600 seconds.",
             "model": "Model",

@@ -53,7 +53,9 @@ func createAPIKey(c *gin.Context) {
 		resp.Error(c, http.StatusBadRequest, resp.ErrInvalidJSON)
 		return
 	}
-	req.APIKey = auth.GenerateAPIKey()
+	if strings.TrimSpace(req.APIKey) == "" {
+		req.APIKey = auth.GenerateAPIKey()
+	}
 	if err := op.APIKeyCreate(&req, c.Request.Context()); err != nil {
 		resp.Error(c, http.StatusInternalServerError, err.Error())
 		return

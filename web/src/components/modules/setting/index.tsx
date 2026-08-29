@@ -7,6 +7,7 @@ import { SettingAPIKey } from './APIKey';
 import { SettingLLMPrice } from './LLMPrice';
 import { SettingAccount } from './Account';
 import { SettingInfo } from './Info';
+import { SettingSQLiteStatus } from './SQLiteStatus';
 import { SettingLLMSync } from './LLMSync';
 import { SettingLog } from './Log';
 import { SettingBackup } from './Backup';
@@ -26,6 +27,7 @@ export function Setting() {
                 <SettingLLMSync key="setting-llmsync" />
                 <SettingCircuitBreaker key="setting-circuit-breaker" />
                 <SettingBackup key="setting-backup" />
+                <SettingSQLiteStatus key="setting-sqlite-status" />
             </PageWrapper>
         </div>
     );

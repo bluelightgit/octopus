@@ -5,7 +5,13 @@ import {
     MorphingDialogDescription,
     useMorphingDialog,
 } from '@/components/ui/morphing-dialog';
-import { useCreateChannel, ChannelType, AutoGroupType } from '@/api/endpoints/channel';
+import {
+    useCreateChannel,
+    ChannelType,
+    AutoGroupType,
+    SystemPromptRoleOverride,
+    normalizeSystemPromptRoleOverride,
+} from '@/api/endpoints/channel';
 import { useTranslations } from 'next-intl';
 import { ChannelForm, type ChannelFormData } from './Form';
 
@@ -19,6 +25,7 @@ export function CreateDialogContent() {
         custom_header: [],
         channel_proxy: '',
         param_override: '',
+        system_prompt_role_override: SystemPromptRoleOverride.Auto,
         keys: [{ enabled: true, channel_key: '', remark: '' }],
         model: '',
         custom_model: '',
@@ -61,6 +68,9 @@ export function CreateDialogContent() {
                 custom_header: normalizedHeaders,
                 channel_proxy: channelProxy,
                 param_override: paramOverride,
+                system_prompt_role_override: formData.type === ChannelType.OpenAIChat
+                    ? normalizeSystemPromptRoleOverride(formData.system_prompt_role_override)
+                    : SystemPromptRoleOverride.Auto,
                 responses_websocket_max_lifetime_sec: formData.responses_websocket_max_lifetime_sec,
                 match_regex: formData.match_regex.trim(),
             },
@@ -73,6 +83,7 @@ export function CreateDialogContent() {
                         custom_header: [],
                         channel_proxy: '',
                         param_override: '',
+                        system_prompt_role_override: SystemPromptRoleOverride.Auto,
                         keys: [{ enabled: true, channel_key: '', remark: '' }],
                         model: '',
                         custom_model: '',

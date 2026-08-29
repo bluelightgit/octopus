@@ -19,20 +19,25 @@ func (o *ChatOutbound) TransformRequest(ctx context.Context, request *model.Inte
 	if request == nil {
 		return nil, fmt.Errorf("request is nil")
 	}
+	requestForOutbound := request
+	roleOverride := request.TransformOptions.SystemPromptRoleOverride.Normalize()
+	if roleOverride != model.SystemPromptRoleOverrideAuto {
+		requestForOutbound = request.CloneWithSystemPromptRoleOverride(roleOverride)
+	}
 	// Same-protocol passthrough: preserve raw Chat Completions request fields.
 	var body []byte
 	var err error
-	if request != nil && request.RawAPIFormat == model.APIFormatOpenAIChatCompletion && len(request.RawRequest) > 0 {
-		body, err = rewriteChatCompletionsRequestBody(request.RawRequest, request.Model, request.Stream)
+	if requestForOutbound.RawAPIFormat == model.APIFormatOpenAIChatCompletion && len(requestForOutbound.RawRequest) > 0 {
+		body, err = rewriteChatCompletionsRequestBodyWithRoleOverride(requestForOutbound.RawRequest, requestForOutbound.Model, requestForOutbound.Stream, roleOverride)
 		if err != nil {
 			return nil, fmt.Errorf("failed to rewrite chat completions request body: %w", err)
 		}
 	} else {
 		// Avoid mutating the shared request (used for retries/metrics).
-		copyReq := *request
-		copyReq.Messages = append([]model.Message(nil), request.Messages...)
-		if request.StreamOptions != nil {
-			so := *request.StreamOptions
+		copyReq := *requestForOutbound
+		copyReq.Messages = append([]model.Message(nil), requestForOutbound.Messages...)
+		if requestForOutbound.StreamOptions != nil {
+			so := *requestForOutbound.StreamOptions
 			copyReq.StreamOptions = &so
 		}
 		copyReq.ClearHelpFields()
@@ -52,8 +57,8 @@ func (o *ChatOutbound) TransformRequest(ctx context.Context, request *model.Inte
 
 		// Preserve raw tool metadata from newer schemas when converting from
 		// Responses API into Chat Completions.
-		if request.RawAPIFormat == model.APIFormatOpenAIResponse {
-			if merged, mergeErr := mergeExtraBodyIntoJSON(body, request.ExtraBody); mergeErr == nil {
+		if requestForOutbound.RawAPIFormat == model.APIFormatOpenAIResponse {
+			if merged, mergeErr := mergeExtraBodyIntoJSON(body, requestForOutbound.ExtraBody); mergeErr == nil {
 				body = merged
 			} else {
 				return nil, fmt.Errorf("failed to merge extra body: %w", mergeErr)
@@ -68,7 +73,7 @@ func (o *ChatOutbound) TransformRequest(ctx context.Context, request *model.Inte
 
 	req.Header.Set("Content-Type", "application/json")
 	accept := "application/json"
-	if request.Stream != nil && *request.Stream {
+	if requestForOutbound.Stream != nil && *requestForOutbound.Stream {
 		accept = "text/event-stream"
 	}
 	req.Header.Set("Accept", accept)
@@ -85,6 +90,10 @@ func (o *ChatOutbound) TransformRequest(ctx context.Context, request *model.Inte
 }
 
 func rewriteChatCompletionsRequestBody(raw []byte, modelName string, stream *bool) ([]byte, error) {
+	return rewriteChatCompletionsRequestBodyWithRoleOverride(raw, modelName, stream, model.SystemPromptRoleOverrideAuto)
+}
+
+func rewriteChatCompletionsRequestBodyWithRoleOverride(raw []byte, modelName string, stream *bool, roleOverride model.SystemPromptRoleOverride) ([]byte, error) {
 	var obj map[string]any
 	if err := json.Unmarshal(raw, &obj); err != nil {
 		return nil, err
@@ -106,6 +115,24 @@ func rewriteChatCompletionsRequestBody(raw []byte, modelName string, stream *boo
 		}
 		so["include_usage"] = true
 		obj["stream_options"] = so
+	}
+
+	roleOverride = roleOverride.Normalize()
+	if roleOverride != model.SystemPromptRoleOverrideAuto {
+		messages, ok := obj["messages"].([]any)
+		if !ok {
+			return nil, fmt.Errorf("messages field is required for system prompt role override")
+		}
+		role := string(roleOverride)
+		for i, rawMessage := range messages {
+			message, ok := rawMessage.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("messages[%d] must be an object for system prompt role override", i)
+			}
+			if currentRole, ok := message["role"].(string); ok && (currentRole == "system" || currentRole == "developer") {
+				message["role"] = role
+			}
+		}
 	}
 
 	return json.Marshal(obj)

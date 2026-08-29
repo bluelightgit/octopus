@@ -23,6 +23,7 @@ var (
 	systemProxyClient     *http.Client
 	systemProxyURL        string
 	clientLock            sync.RWMutex
+	customProxyClients    sync.Map // proxy URL -> *http.Client
 	responseHeaderTimeout = 30 * time.Second
 )
 
@@ -44,9 +45,22 @@ func ReloadRuntimeSettings() {
 	defer clientLock.Unlock()
 
 	responseHeaderTimeout = timeout
+	if systemDirectClient != nil {
+		systemDirectClient.CloseIdleConnections()
+	}
+	if systemProxyClient != nil {
+		systemProxyClient.CloseIdleConnections()
+	}
 	systemDirectClient = nil
 	systemProxyClient = nil
 	systemProxyURL = ""
+	customProxyClients.Range(func(key, value any) bool {
+		if client, ok := value.(*http.Client); ok {
+			client.CloseIdleConnections()
+		}
+		customProxyClients.Delete(key)
+		return true
+	})
 }
 
 // GetHTTPClientSystemProxy returns a cached http.Client.
@@ -81,6 +95,9 @@ func GetHTTPClientSystemProxy(useProxy bool) (*http.Client, error) {
 		if err != nil {
 			return nil, err
 		}
+		if systemProxyClient != nil {
+			systemProxyClient.CloseIdleConnections()
+		}
 		systemProxyClient = client
 		systemProxyURL = currentProxyURL
 		return systemProxyClient, nil
@@ -107,13 +124,24 @@ func GetHTTPClientSystemProxy(useProxy bool) (*http.Client, error) {
 	return systemDirectClient, nil
 }
 
-// GetHTTPClientCustomProxy returns a NEW http.Client every time (no reuse).
+// GetHTTPClientCustomProxy returns a cached http.Client for each proxy URL.
 // proxyURL supports: http, https, socks, socks5
 func GetHTTPClientCustomProxy(proxyURL string) (*http.Client, error) {
 	if proxyURL == "" {
 		return nil, fmt.Errorf("proxy url is empty")
 	}
-	return newHTTPClientCustomProxy(proxyURL)
+	if cached, ok := customProxyClients.Load(proxyURL); ok {
+		return cached.(*http.Client), nil
+	}
+	client, err := newHTTPClientCustomProxy(proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	actual, loaded := customProxyClients.LoadOrStore(proxyURL, client)
+	if loaded {
+		client.CloseIdleConnections()
+	}
+	return actual.(*http.Client), nil
 }
 
 func clonedDefaultTransport() (*http.Transport, error) {
